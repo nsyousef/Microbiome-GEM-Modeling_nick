@@ -2,11 +2,13 @@
 I/O Utilities for MiGEMox Pipeline
 
 This module provides functions for loading input data (e.g., abundance files),
-and preparing model data for saving to disk. It centralizes file operations
+preparing model data for saving to disk, and general pipeline helpers such as
+memory usage tracking. It centralizes file operations and utility functions
 to improve code organization and reusability.
 """
 
 import pandas as pd
+import psutil
 import os
 import re
 from cobra.io import load_matlab_model
@@ -18,6 +20,17 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 from scipy.sparse import csr_matrix
+
+def print_memory_usage(stage=""):
+    """
+    Prints the current memory usage (in MB) of the running Python process.
+
+    Args:
+        stage (str): Description of the pipeline stage.
+    """
+    process = psutil.Process(os.getpid())
+    mem_mb = process.memory_info().rss / (1024 ** 2)
+    print(f"[MEMORY] {stage}: {mem_mb:.2f} MB")
 
 def get_individual_size_name(abun_file_path: str, mod_path: str) -> tuple:
     """
