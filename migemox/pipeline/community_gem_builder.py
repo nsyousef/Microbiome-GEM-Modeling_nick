@@ -15,9 +15,10 @@ import pandas as pd
 import os
 import re
 from migemox.pipeline.constraints import build_global_coupling_constraints, prune_coupling_constraints_by_microbe
-from migemox.pipeline.io_utils import make_community_gem_dict
+from migemox.pipeline.io_utils import make_community_gem_dict, print_memory_usage
 from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
+from datetime import datetime, timezone
 
 # Metabolite exchange bounds (mmol/gDW/h)
 EXCHANGE_BOUNDS = (-1000.0, 10000.0) # Max uptake and secretion rates
@@ -356,10 +357,10 @@ def build_global_gem(abundance_df: pd.DataFrame, mod_dir: str) -> tuple:
         of extracellular metabolites ([e]) found in the model.
     """
 
-    print("Building global community model".center(40, '*'))
+    print(f"{datetime.now(tz=timezone.utc)}: Building global community model".center(40, '*'))
     all_microbe = abundance_df.index.tolist()
     first_path = os.path.join(mod_dir, all_microbe[0] + ".mat")
-    print(f"Added first microbe model: {all_microbe[0]}".center(40, '*'))
+    print(f"{datetime.now(tz=timezone.utc)}: Added first microbe model: {all_microbe[0]}".center(40, '*'))
     first_model = cobra.io.load_matlab_model(first_path)
     # Collect [e] metabolites from first model
     ex_mets = set()
@@ -376,14 +377,16 @@ def build_global_gem(abundance_df: pd.DataFrame, mod_dir: str) -> tuple:
         new_rxns = [r for r in tagged_model.reactions if r.id not in existing_rxns]
         global_model.add_reactions(new_rxns)
 
-    print("Finished adding GEM reconstructions to community".center(40, '*'))
+    print(f"{datetime.now(tz=timezone.utc)}: Finished adding GEM reconstructions to community".center(40, '*'))
 
-    print("Adding diet and fecal compartments".center(40, '*'))
+    print(f"{datetime.now(tz=timezone.utc)}: Adding diet and fecal compartments".center(40, '*'))
     clean_model = add_diet_fecal_compartments(model=global_model)
-    print("Done adding diet and fecal compartments".center(40, '*'))
+    print(f"{datetime.now(tz=timezone.utc)}: Done adding diet and fecal compartments".center(40, '*'))
+    print_memory_usage()
 
     global_C, global_d, global_dsense, global_ctrs = build_global_coupling_constraints(clean_model, all_microbe)
 
+    print(f"{datetime.now(tz=timezone.utc)}: Completed build_global_coupling_constraints.")
     return clean_model, global_C, global_d, global_dsense, global_ctrs, list(sorted(ex_mets))
 
 def build_sample_gem(sample_name: str, global_model: cobra.Model, abundance_df: pd.DataFrame, 
@@ -406,15 +409,22 @@ def build_sample_gem(sample_name: str, global_model: cobra.Model, abundance_df: 
     Returns:
         Path to the saved model
     """
+
+    print(f"{datetime.now(tz=timezone.utc)}: Building sample GEM for {sample_name}")
+    print_memory_usage()
     save_path = os.path.join(out_dir, f"microbiota_model_samp_{sample_name}.mat")
     if os.path.exists(save_path):
         print(f"Personalized Model for {sample_name} already exists. Skipping.")
         return save_path
+    print(f"{datetime.now(tz=timezone.utc)}: Personalized model for {sample_name} does not exist.")
     model = global_model.copy()
+    print(f"Memory usage after copying global model:")
+    print_memory_usage()
     model.name = sample_name
     sample_abun = abundance_df[sample_name]
 
     # Prune zero-abundance microbe from the model
+    print(f"{datetime.now(tz=timezone.utc)}: Pruning zero abundance microbes")
     zero_microbe = [sp for sp in sample_abun.index if sample_abun[sp] < 1e-7]
     present_microbe = [sp for sp in sample_abun.index if sample_abun[sp] >= 1e-7]
 
@@ -425,23 +435,28 @@ def build_sample_gem(sample_name: str, global_model: cobra.Model, abundance_df: 
     model = com_biomass(model=model, abun_path=abun_path, sample_com=sample_name)
 
     # Prune coupling constraints from the global model (C, dsense, d, ctrs)
+    print(f"{datetime.now(tz=timezone.utc)}: Pruning coupling constraints from global model")
     sample_C, sample_d, sample_dsense, sample_ctrs = prune_coupling_constraints_by_microbe(
         global_model, global_C, global_d, global_dsense, global_ctrs, present_microbe, model
     )
 
     # Ensuring the reversablity fits all compartments
+    print(f"{datetime.now(tz=timezone.utc)}: Ensuring reversibility fits all compartments")
     for reac in [r for r in model.reactions if "DUt" in r.id or "UFEt" in r.id]:
         reac.lower_bound = 0.
 
     # Setting EX_microbeBiomass[fe] as objective to match MATLAB mgPipe
     model.objective = "EX_microbeBiomass[fe]"
 
+    print(f"{datetime.now(tz=timezone.utc)}: Saving sample GEM to file")
+    print_memory_usage()
     os.makedirs(out_dir, exist_ok=True)
     model_dict = make_community_gem_dict(
         model, C=sample_C, d=sample_d, dsense=sample_dsense, ctrs=sample_ctrs
     )
     savemat(save_path, {'model': model_dict}, do_compression=True, oned_as='column')
-
+    print(f"Sample GEM complete!")
+    print_memory_usage()
     return save_path
 
 def community_gem_builder(abun_filepath: str, mod_filepath: str, out_filepath: str, workers=1) -> tuple:
@@ -469,8 +484,8 @@ def community_gem_builder(abun_filepath: str, mod_filepath: str, out_filepath: s
             ex_mets: List of extracellular metabolites in the model
     """
 
-    print("Starting MiGeMox pipeline".center(40, '*'))
-    print("Reading abundance file".center(40, '*'))
+    print(f"{datetime.now(tz=timezone.utc)}: Starting MiGeMox pipeline".center(40, '*'))
+    print(f"{datetime.now(tz=timezone.utc)}: Reading abundance file".center(40, '*'))
 
     sample_info = pd.read_csv(abun_filepath)
     sample_info.rename(columns={list(sample_info)[0]:"microbe"}, inplace=True)
@@ -488,11 +503,13 @@ def community_gem_builder(abun_filepath: str, mod_filepath: str, out_filepath: s
     global_model, global_C, global_d, global_dsense, global_ctrs, ex_mets = build_global_gem(sample_info, mod_filepath)
     samples = sample_info.columns.tolist()
 
+    print(f"{datetime.now(tz=timezone.utc)}: Building Sample GEMs")
+    print_memory_usage()
     with ProcessPoolExecutor(max_workers=workers) as executor:
         futures = [executor.submit(build_sample_gem, s, global_model, sample_info, abun_filepath, out_filepath, 
                                    global_C, global_d, global_dsense, global_ctrs)
                    for s in samples]
         for f in tqdm(futures, desc='Building sample GEMs'):
             f.result()
-    
+    print(f"{datetime.now(tz=timezone.utc)}: Finished building Sample GEMs") 
     return clean_samp_names, sample_info.index.tolist(), ex_mets
