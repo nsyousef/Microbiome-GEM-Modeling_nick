@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: str,
                          res_filepath: str = 'Results', workers: int = 1, solver: str = 'cplex',
                          biomass_bounds: tuple = (0.4, 1.0), contr_filepath: str = 'Contributions',
-                         analyze_contributions: bool = False, fresh_start: bool = False
+                         analyze_contributions: bool = False, fresh_start: bool = False,
                          use_net_production_dict: bool = False):
     """
     Main function to run the MiGEMox pipeline.
@@ -151,7 +151,7 @@ if __name__ == "__main__":
         workers=args.workers,
         solver=args.solver,
         biomass_bounds=biomass_bounds_tuple,
-        analyze_contributions=args.analyze_contributions
-        use_net_production_dict=args.use_net_production_dict
-        fresh_start=args.fresh_start
+        analyze_contributions=args.analyze_contributions,
+        use_net_production_dict=args.use_net_production_dict,
+        fresh_start=args.fresh_start,
     )
