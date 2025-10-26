@@ -509,7 +509,9 @@ def community_gem_builder(abun_filepath: str, mod_filepath: str, out_filepath: s
 
     # save global model for later
     global_model_path = os.path.join(out_filepath, "global_model.sbml")
+    print(f"{datetime.now(tz=timezone.utc)}: Writing global model to: {global_model_path}")
     write_sbml_model(global_model, global_model_path)
+    print(f"{datetime.now(tz=timezone.utc)}: Global model written.")
 
     print(f"{datetime.now(tz=timezone.utc)}: Building Sample GEMs")
     print_memory_usage()
