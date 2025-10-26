@@ -10,6 +10,7 @@ based on sample-specific abundances.
 
 import cobra
 from cobra import Reaction, Metabolite
+from cobra.io import read_sbml_model, write_sbml_model
 from scipy.io import savemat
 import pandas as pd
 import os
@@ -389,7 +390,7 @@ def build_global_gem(abundance_df: pd.DataFrame, mod_dir: str) -> tuple:
     print(f"{datetime.now(tz=timezone.utc)}: Completed build_global_coupling_constraints.")
     return clean_model, global_C, global_d, global_dsense, global_ctrs, list(sorted(ex_mets))
 
-def build_sample_gem(sample_name: str, global_model: cobra.Model, abundance_df: pd.DataFrame, 
+def build_sample_gem(sample_name: str, global_model_path: str, abundance_df: pd.DataFrame, 
                        abun_path: str, out_dir: str, global_C=None, global_d=None,
                        global_dsense=None, global_ctrs=None) -> str:
     """
@@ -401,7 +402,7 @@ def build_sample_gem(sample_name: str, global_model: cobra.Model, abundance_df: 
 
     Parameters:
         sample_name: column name in abundance_df
-        global_model: unpruned community model
+        global_model_path: path to the unpruned community model
         abundance_df: pandas dataframe of abundances
         abun_path: path to abundance CSV (needed by com_biomass)
         out_dir: directory to save the output model
@@ -417,8 +418,11 @@ def build_sample_gem(sample_name: str, global_model: cobra.Model, abundance_df: 
         print(f"Personalized Model for {sample_name} already exists. Skipping.")
         return save_path
     print(f"{datetime.now(tz=timezone.utc)}: Personalized model for {sample_name} does not exist.")
-    model = global_model.copy()
-    print(f"Memory usage after copying global model:")
+    print(f"{datetime.now(tz=timezone.utc)}: Loading global model")
+    global_model = read_sbml_model(global_model_path) # need to save original global model for later, so load this one and leave it uncahanged
+    model = read_sbml_model(global_model_path) # also load this one to avoid copying; this is the one we will change
+    print(f"{datetime.now(tz=timezone.utc)}: Global model loaded succssfully")
+    print(f"Memory usage after loading global model:")
     print_memory_usage()
     model.name = sample_name
     sample_abun = abundance_df[sample_name]
@@ -502,6 +506,9 @@ def community_gem_builder(abun_filepath: str, mod_filepath: str, out_filepath: s
 
     global_model, global_C, global_d, global_dsense, global_ctrs, ex_mets = build_global_gem(sample_info, mod_filepath)
     samples = sample_info.columns.tolist()
+
+    # save global model for later
+    write_sbml_model(global_model, os.path.join(out_filepath, "global_model.sbml"))
 
     print(f"{datetime.now(tz=timezone.utc)}: Building Sample GEMs")
     print_memory_usage()
