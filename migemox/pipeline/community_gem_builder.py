@@ -508,12 +508,13 @@ def community_gem_builder(abun_filepath: str, mod_filepath: str, out_filepath: s
     samples = sample_info.columns.tolist()
 
     # save global model for later
-    write_sbml_model(global_model, os.path.join(out_filepath, "global_model.sbml"))
+    global_model_path = os.path.join(out_filepath, "global_model.sbml")
+    write_sbml_model(global_model, global_model_path)
 
     print(f"{datetime.now(tz=timezone.utc)}: Building Sample GEMs")
     print_memory_usage()
     with ProcessPoolExecutor(max_workers=workers) as executor:
-        futures = [executor.submit(build_sample_gem, s, global_model, sample_info, abun_filepath, out_filepath, 
+        futures = [executor.submit(build_sample_gem, s, global_model_path, sample_info, abun_filepath, out_filepath, 
                                    global_C, global_d, global_dsense, global_ctrs)
                    for s in samples]
         for f in tqdm(futures, desc='Building sample GEMs'):
