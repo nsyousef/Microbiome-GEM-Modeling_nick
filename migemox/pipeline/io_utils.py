@@ -21,6 +21,19 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 from scipy.sparse import csr_matrix
 
+def ensure_parent_dir(file_path: str):
+    """
+    Ensure a parent directory to a file path exists.
+
+    This function creates the directory if it does not exist.
+
+    Args:
+        file_path: the path to the file you want to ensure exists
+    """
+    parent_dir = os.path.dirname(file_path)
+    if parent_dir:  # This will be empty string if file is in current directory
+        os.makedirs(parent_dir, exist_ok=True)
+
 def print_memory_usage(stage=""):
     """
     Prints the current memory usage (in MB) of the running Python process.
