@@ -12,6 +12,7 @@ import cobra
 from cobra import Reaction, Metabolite
 from cobra.io import read_sbml_model, write_sbml_model
 from scipy.io import savemat
+import numpy as np
 import pandas as pd
 import os
 import re
@@ -20,6 +21,7 @@ from migemox.pipeline.io_utils import make_community_gem_dict, print_memory_usag
 from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
 from datetime import datetime, timezone
+import pickle
 
 # Metabolite exchange bounds (mmol/gDW/h)
 EXCHANGE_BOUNDS = (-1000.0, 10000.0) # Max uptake and secretion rates
@@ -390,9 +392,8 @@ def build_global_gem(abundance_df: pd.DataFrame, mod_dir: str) -> tuple:
     print(f"{datetime.now(tz=timezone.utc)}: Completed build_global_coupling_constraints.")
     return clean_model, global_C, global_d, global_dsense, global_ctrs, list(sorted(ex_mets))
 
-def build_sample_gem(sample_name: str, global_model_path: str, abundance_df: pd.DataFrame, 
-                       abun_path: str, out_dir: str, global_C=None, global_d=None,
-                       global_dsense=None, global_ctrs=None) -> str:
+def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.DataFrame, 
+                       abun_path: str, out_dir: str) -> str:
     """
     Takes a deep copy of the global model and builds the sample-specific model:
         - prunes zero-abundance microbe
@@ -419,8 +420,15 @@ def build_sample_gem(sample_name: str, global_model_path: str, abundance_df: pd.
         return save_path
     print(f"{datetime.now(tz=timezone.utc)}: Personalized model for {sample_name} does not exist.")
     print(f"{datetime.now(tz=timezone.utc)}: Loading global model")
+    global_model_path = os.path.join(global_model_dir, "global_model.sbml")
+    global_matr_path = os.path.join(global_model_dir, "global_matr.npz")
     global_model = read_sbml_model(global_model_path) # need to save original global model for later, so load this one and leave it uncahanged
     model = read_sbml_model(global_model_path) # also load this one to avoid copying; this is the one we will change
+    data = np.load(global_matr_path)
+    global_C = data['C']
+    global_d = data['d']
+    global_dsense = data['dsense']
+    global_ctrs = data['ctrs']
     print(f"{datetime.now(tz=timezone.utc)}: Global model loaded succssfully")
     print(f"Memory usage after loading global model:")
     print_memory_usage()
@@ -507,18 +515,24 @@ def community_gem_builder(abun_filepath: str, mod_filepath: str, out_filepath: s
     global_model, global_C, global_d, global_dsense, global_ctrs, ex_mets = build_global_gem(sample_info, mod_filepath)
     samples = sample_info.columns.tolist()
 
-    # save global model for later
-    global_model_path = os.path.join(out_filepath, "global_model.sbml")
-    print(f"{datetime.now(tz=timezone.utc)}: Writing global model to: {global_model_path}")
+    # save global model and ex_mets for later, to allow for restarting from this point
+    global_model_dir = os.path.join(out_filepath, "global_model")
+    print(f"{datetime.now(tz=timezone.utc)}: Writing global model to: {global_model_dir}")
+    global_model_path = os.path.join(global_model_dir, "global_model.sbml")
+    global_matr_path = os.path.join(global_model_dir, "global_matr.npz")
     ensure_parent_dir(global_model_path)
     write_sbml_model(global_model, global_model_path)
+    np.savez(global_matr_path, C=global_C, d=global_d, dsense=global_dsense, ctrs=global_ctrs)
+    
     print(f"{datetime.now(tz=timezone.utc)}: Global model written.")
+    print(f"{datetime.now(tz=timezone.utc)}: Deleting global model from memory")
+    del global_model, global_C, global_d, global_dsense, global_ctrs
 
-    print(f"{datetime.now(tz=timezone.utc)}: Building Sample GEMs")
+    print(f"{datetime.now(tz=timezone.utc)}: Memory usage after deleting global model")
     print_memory_usage()
+    print(f"{datetime.now(tz=timezone.utc)}: Building sample GEMs")
     with ProcessPoolExecutor(max_workers=workers) as executor:
-        futures = [executor.submit(build_sample_gem, s, global_model_path, sample_info, abun_filepath, out_filepath, 
-                                   global_C, global_d, global_dsense, global_ctrs)
+        futures = [executor.submit(build_sample_gem, s, global_model_dir, sample_info, abun_filepath, out_filepath)
                    for s in samples]
         for f in tqdm(futures, desc='Building sample GEMs'):
             f.result()
