@@ -424,7 +424,7 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
     global_matr_path = os.path.join(global_model_dir, "global_matr.npz")
     global_model = read_sbml_model(global_model_path) # need to save original global model for later, so load this one and leave it uncahanged
     model = read_sbml_model(global_model_path) # also load this one to avoid copying; this is the one we will change
-    data = np.load(global_matr_path)
+    data = np.load(global_matr_path, allow_pickle=True)
     global_C = data['C']
     global_d = data['d']
     global_dsense = data['dsense']
