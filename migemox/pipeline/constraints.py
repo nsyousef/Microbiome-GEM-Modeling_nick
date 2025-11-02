@@ -134,6 +134,13 @@ def prune_coupling_constraints_by_microbe(
             - ctrs (list): Sample-specific constraint names.
     """
 
+    # print matrices for debugging
+    print(f"Dimensions of matrices loaded in prune_coupling_constraints_by_microbe:")
+    print(f"global_C: {global_C.shape}")
+    print(f"global_d: {global_d.shape}")
+    print(f"global_dsense: {global_dsense.shape}")
+    print(f"global_ctrs: {global_ctrs.shape}")
+
     present_microbe_set = set(present_microbe)
     slack_prefix = "slack_"
     keep_rows = []

@@ -432,6 +432,14 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
     print(f"{datetime.now(tz=timezone.utc)}: Global model loaded succssfully")
     print(f"Memory usage after loading global model:")
     print_memory_usage()
+
+    # print matrices for debugging
+    print(f"Dimensions of matrices loaded in build_sample_gem:")
+    print(f"global_C: {global_C.shape}")
+    print(f"global_d: {global_d.shape}")
+    print(f"global_dsense: {global_dsense.shape}")
+    print(f"global_ctrs: {global_ctrs.shape}")
+
     model.name = sample_name
     sample_abun = abundance_df[sample_name]
 
@@ -514,6 +522,14 @@ def community_gem_builder(abun_filepath: str, mod_filepath: str, out_filepath: s
 
     global_model, global_C, global_d, global_dsense, global_ctrs, ex_mets = build_global_gem(sample_info, mod_filepath)
     samples = sample_info.columns.tolist()
+
+    # print dimensions of matrices for debugging
+    print("Dimensions of matrices for global model:")
+    print(f"global_C: {global_C.shape}")
+    print(f"global_d: {global_d.shape}")
+    print(f"global_dsense: {global_dsense.shape}")
+    print(f"global_ctrs: {global_ctrs.shape}")
+    print(f"ex_mets: {len(ex_mets)}")
 
     # save global model and ex_mets for later, to allow for restarting from this point
     global_model_dir = os.path.join(out_filepath, "global_model")
