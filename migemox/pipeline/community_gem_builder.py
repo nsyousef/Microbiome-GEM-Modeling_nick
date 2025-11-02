@@ -12,6 +12,7 @@ import cobra
 from cobra import Reaction, Metabolite
 from cobra.io import read_sbml_model, write_sbml_model
 from scipy.io import savemat
+from scipy import sparse
 import numpy as np
 import pandas as pd
 import os
@@ -21,7 +22,6 @@ from migemox.pipeline.io_utils import make_community_gem_dict, print_memory_usag
 from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
 from datetime import datetime, timezone
-import pickle
 
 # Metabolite exchange bounds (mmol/gDW/h)
 EXCHANGE_BOUNDS = (-1000.0, 10000.0) # Max uptake and secretion rates
@@ -422,10 +422,11 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
     print(f"{datetime.now(tz=timezone.utc)}: Loading global model")
     global_model_path = os.path.join(global_model_dir, "global_model.sbml")
     global_matr_path = os.path.join(global_model_dir, "global_matr.npz")
+    global_vec_path = os.path.join(global_model_dir, "global_vecs.npz")
     global_model = read_sbml_model(global_model_path) # need to save original global model for later, so load this one and leave it uncahanged
     model = read_sbml_model(global_model_path) # also load this one to avoid copying; this is the one we will change
-    data = np.load(global_matr_path, allow_pickle=True)
-    global_C = data['global_C']
+    global_C = sparse.load_npz(global_matr_path)
+    data = np.load(global_vec_path, allow_pickle=True)
     global_d = data['global_d']
     global_dsense = data['global_dsense']
     global_ctrs = data['global_ctrs']
@@ -537,9 +538,11 @@ def community_gem_builder(abun_filepath: str, mod_filepath: str, out_filepath: s
     print(f"{datetime.now(tz=timezone.utc)}: Writing global model to: {global_model_dir}")
     global_model_path = os.path.join(global_model_dir, "global_model.sbml")
     global_matr_path = os.path.join(global_model_dir, "global_matr.npz")
+    global_vec_path = os.path.join(global_model_dir, "global_vecs.npz")
     ensure_parent_dir(global_model_path)
     write_sbml_model(global_model, global_model_path)
-    np.savez(global_matr_path, global_C=global_C, global_d=global_d, global_dsense=global_dsense, global_ctrs=global_ctrs)
+    sparse.save_npz(global_matr_path, global_C)
+    np.savez(global_vec_path, global_d=global_d, global_dsense=global_dsense, global_ctrs=global_ctrs)
     
     print(f"{datetime.now(tz=timezone.utc)}: Global model written.")
     print(f"{datetime.now(tz=timezone.utc)}: Deleting global model from memory")
