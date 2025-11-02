@@ -425,10 +425,10 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
     global_model = read_sbml_model(global_model_path) # need to save original global model for later, so load this one and leave it uncahanged
     model = read_sbml_model(global_model_path) # also load this one to avoid copying; this is the one we will change
     data = np.load(global_matr_path, allow_pickle=True)
-    global_C = data['C']
-    global_d = data['d']
-    global_dsense = data['dsense']
-    global_ctrs = data['ctrs']
+    global_C = data['global_C']
+    global_d = data['global_d']
+    global_dsense = data['global_dsense']
+    global_ctrs = data['global_ctrs']
     print(f"{datetime.now(tz=timezone.utc)}: Global model loaded succssfully")
     print(f"Memory usage after loading global model:")
     print_memory_usage()
@@ -526,6 +526,7 @@ def community_gem_builder(abun_filepath: str, mod_filepath: str, out_filepath: s
     # print dimensions of matrices for debugging
     print("Dimensions of matrices for global model:")
     print(f"global_C: {global_C.shape}")
+    print(f"global_C type: {type(global_C)}")
     print(f"global_d: {global_d.shape}")
     print(f"global_dsense: {global_dsense.shape}")
     print(f"global_ctrs: {global_ctrs.shape}")
@@ -538,7 +539,7 @@ def community_gem_builder(abun_filepath: str, mod_filepath: str, out_filepath: s
     global_matr_path = os.path.join(global_model_dir, "global_matr.npz")
     ensure_parent_dir(global_model_path)
     write_sbml_model(global_model, global_model_path)
-    np.savez(global_matr_path, C=global_C, d=global_d, dsense=global_dsense, ctrs=global_ctrs)
+    np.savez(global_matr_path, global_C=global_C, global_d=global_d, global_dsense=global_dsense, global_ctrs=global_ctrs)
     
     print(f"{datetime.now(tz=timezone.utc)}: Global model written.")
     print(f"{datetime.now(tz=timezone.utc)}: Deleting global model from memory")
