@@ -17,6 +17,8 @@ import numpy as np
 import pandas as pd
 import os
 import re
+import sys
+import gc
 from migemox.pipeline.constraints import build_global_coupling_constraints, prune_coupling_constraints_by_microbe
 from migemox.pipeline.io_utils import make_community_gem_dict, print_memory_usage, ensure_parent_dir
 from concurrent.futures import ProcessPoolExecutor
@@ -423,8 +425,11 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
     global_model_path = os.path.join(global_model_dir, "global_model.sbml")
     global_matr_path = os.path.join(global_model_dir, "global_matr.npz")
     global_vec_path = os.path.join(global_model_dir, "global_vecs.npz")
+    print(f"{datetime.now(tz=timezone.utc)}: Loading model")
     global_model = read_sbml_model(global_model_path) # need to save original global model for later, so load this one and leave it uncahanged
+    print(f"{datetime.now(tz=timezone.utc)}: Loading second copy of model")
     model = read_sbml_model(global_model_path) # also load this one to avoid copying; this is the one we will change
+    print(f"{datetime.now(tz=timezone.utc)}: Loading other matrices")
     global_C = sparse.load_npz(global_matr_path)
     data = np.load(global_vec_path, allow_pickle=True)
     global_d = data['global_d']
@@ -543,18 +548,32 @@ def community_gem_builder(abun_filepath: str, mod_filepath: str, out_filepath: s
     write_sbml_model(global_model, global_model_path)
     sparse.save_npz(global_matr_path, global_C)
     np.savez(global_vec_path, global_d=global_d, global_dsense=global_dsense, global_ctrs=global_ctrs)
-    
     print(f"{datetime.now(tz=timezone.utc)}: Global model written.")
-    print(f"{datetime.now(tz=timezone.utc)}: Deleting global model from memory")
+    
+    print(f"{datetime.now(tz=timezone.utc)}: Memory usage before deleting global model")
+    print_memory_usage()
+    print(f"{datetime.now(tz=timezone.utc)}: Attempting to delete global model from memory")
+    print(f"Number of references to global_model (if > 2, deleting will not free up memory): {sys.getrefcount(global_model)}")
+    print(f"Number of references to global_C: {sys.getrefcount(global_C)}")
+    print(f"Number of references to global_d: {sys.getrefcount(global_d)}")
+    print(f"Number of references to global_dsense: {sys.getrefcount(global_dsense)}")
+    print(f"Number of references to global_ctrs: {sys.getrefcount(global_ctrs)}")
     del global_model, global_C, global_d, global_dsense, global_ctrs
+    gc.collect()
 
     print(f"{datetime.now(tz=timezone.utc)}: Memory usage after deleting global model")
     print_memory_usage()
     print(f"{datetime.now(tz=timezone.utc)}: Building sample GEMs")
-    with ProcessPoolExecutor(max_workers=workers) as executor:
-        futures = [executor.submit(build_sample_gem, s, global_model_dir, sample_info, abun_filepath, out_filepath)
-                   for s in samples]
-        for f in tqdm(futures, desc='Building sample GEMs'):
-            f.result()
+
+    # build sample GEMs sequentially:
+    for s in samples:
+        build_sample_gem(s, global_model_dir, sample_info, abun_filepath, out_filepath)
+
+    # build sample GEMs in parallel
+    # with ProcessPoolExecutor(max_workers=workers) as executor:
+    #     futures = [executor.submit(build_sample_gem, s, global_model_dir, sample_info, abun_filepath, out_filepath)
+    #                for s in samples]
+    #     for f in tqdm(futures, desc='Building sample GEMs'):
+    #         f.result()
     print(f"{datetime.now(tz=timezone.utc)}: Finished building Sample GEMs") 
     return clean_samp_names, sample_info.index.tolist(), ex_mets
