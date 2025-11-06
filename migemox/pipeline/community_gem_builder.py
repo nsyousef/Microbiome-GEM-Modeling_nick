@@ -422,7 +422,7 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
         return save_path
     print(f"{datetime.now(tz=timezone.utc)}: Personalized model for {sample_name} does not exist.")
     print(f"{datetime.now(tz=timezone.utc)}: Loading global model")
-    global_model_path = os.path.join(global_model_dir, "global_model.sbml")
+    global_model_path = os.path.join(global_model_dir, "global_model.json")
     global_matr_path = os.path.join(global_model_dir, "global_matr.npz")
     global_vec_path = os.path.join(global_model_dir, "global_vecs.npz")
     print(f"{datetime.now(tz=timezone.utc)}: Loading model")
@@ -532,7 +532,7 @@ def build_and_save_global_model(abun_filepath: str, mod_filepath: str, out_filep
     # save global model and ex_mets for later, to allow for restarting from this point
     global_model_dir = os.path.join(out_filepath, "global_model")
     print(f"{datetime.now(tz=timezone.utc)}: Writing global model to: {global_model_dir}")
-    global_model_path = os.path.join(global_model_dir, "global_model.sbml")
+    global_model_path = os.path.join(global_model_dir, "global_model.json")
     global_matr_path = os.path.join(global_model_dir, "global_matr.npz")
     global_vec_path = os.path.join(global_model_dir, "global_vecs.npz")
     ensure_parent_dir(global_model_path)
