@@ -296,6 +296,13 @@ def predict_microbe_contributions(diet_mod_dir: str, res_path: Optional[str] = N
     
     flux_spans_df = _calculate_flux_spans(min_fluxes_df, max_fluxes_df)
 
+    print("min_fluxes_df")
+    print(min_fluxes_df.head())
+    print("max_fluxes_df")
+    print(max_fluxes_df.head())
+    print("flux_spans_df")
+    print(flux_spans_df.head())
+
     min_fluxes_df, max_fluxes_df, flux_spans_df = _clean_and_filter_dataframes(min_fluxes_df, max_fluxes_df, flux_spans_df)
     
     # Step 9: Save final results
