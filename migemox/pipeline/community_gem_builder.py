@@ -10,7 +10,7 @@ based on sample-specific abundances.
 
 import cobra
 from cobra import Reaction, Metabolite
-from cobra.io import read_sbml_model, write_sbml_model
+from cobra.io import load_json_model, save_json_model
 from scipy.io import savemat
 from scipy import sparse
 import numpy as np
@@ -397,7 +397,7 @@ def build_global_gem(abundance_df: pd.DataFrame, mod_dir: str) -> tuple:
 def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.DataFrame, 
                        abun_path: str, out_dir: str) -> str:
     """
-    Takes a deep copy of the global model and builds the sample-specific model:
+    Loads the global model and builds the sample-specific model:
         - prunes zero-abundance microbe
         - adds diet constraints
         - adds community biomass
@@ -426,9 +426,9 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
     global_matr_path = os.path.join(global_model_dir, "global_matr.npz")
     global_vec_path = os.path.join(global_model_dir, "global_vecs.npz")
     print(f"{datetime.now(tz=timezone.utc)}: Loading model")
-    global_model = read_sbml_model(global_model_path) # need to save original global model for later, so load this one and leave it uncahanged
+    global_model = load_json_model(global_model_path) # need to save original global model for later, so load this one and leave it uncahanged
     print(f"{datetime.now(tz=timezone.utc)}: Loading second copy of model")
-    model = read_sbml_model(global_model_path) # also load this one to avoid copying; this is the one we will change
+    model = load_json_model(global_model_path) # also load this one to avoid copying; this is the one we will change
     print(f"{datetime.now(tz=timezone.utc)}: Loading other matrices")
     global_C = sparse.load_npz(global_matr_path)
     data = np.load(global_vec_path, allow_pickle=True)
@@ -485,32 +485,23 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
     print_memory_usage()
     return save_path
 
-def community_gem_builder(abun_filepath: str, mod_filepath: str, out_filepath: str, workers=1) -> tuple:
+def build_and_save_global_model(abun_filepath: str, mod_filepath: str, out_filepath: str, workers=1) -> tuple:
     """
-    Inspired by mgpipe.m code.
-    Main pipeline which inputs the GEMs data and accesses the different functions.
+    The full process for building and saving the global GEM.
 
-    INPUTS:
-        abun_path: path to the microbe abundance .csv file
-            Formatting for the microbe abundance:
-                The columns should have the names of the .mat files of the microbe you want to load
-                See file normCoverage_smaller.csv for template example   
-        modpath: path to folder with all AGORA models 
-            E.g. "~/data_input/AGORA103/"
-        respath: path where the community models will be output (defaults to same folder as )
-            E.g. "~/results/"
-        dietpath: path to the AGORA compatible diet (for community model) .csv file
-            E.g. "~/data_input/AverageEU_diet_fluxes.csv"
-  
+    This used to be in `community_gem_builder`, but I am moving it here. The reason for this is I want to make sure the global
+    model is completely cleared from memory before building the sample GEMs. When this function returns, as long as there are no
+    references to the global model, it should clear the global model from memory.
+
+    Inputs to this function are the same as `community_gem_builder` below.
+
     OUTPUTS:
-        All sample community models to a specified local folder
-        tuple: (clean_samp_names, microbe_names, ex_mets)
-            clean_samp_names: List of cleaned sample names (valid Python identifiers)
-            microbe_names: List of microbe names in the model
-            ex_mets: List of extracellular metabolites in the model
+        samples: a list of the samples
+        global_model_dir: the directory where the global model was written to
+        sample_info: the abundance file as a DataFrame
+        clean_samp_names: cleaned up sample names
+        ex_mets: list of extracellular metabolites found in the model
     """
-
-    print(f"{datetime.now(tz=timezone.utc)}: Starting MiGeMox pipeline".center(40, '*'))
     print(f"{datetime.now(tz=timezone.utc)}: Reading abundance file".center(40, '*'))
 
     sample_info = pd.read_csv(abun_filepath)
@@ -545,21 +536,51 @@ def community_gem_builder(abun_filepath: str, mod_filepath: str, out_filepath: s
     global_matr_path = os.path.join(global_model_dir, "global_matr.npz")
     global_vec_path = os.path.join(global_model_dir, "global_vecs.npz")
     ensure_parent_dir(global_model_path)
-    write_sbml_model(global_model, global_model_path)
+    save_json_model(global_model, global_model_path)
     sparse.save_npz(global_matr_path, global_C)
     np.savez(global_vec_path, global_d=global_d, global_dsense=global_dsense, global_ctrs=global_ctrs)
     print(f"{datetime.now(tz=timezone.utc)}: Global model written.")
     
     print(f"{datetime.now(tz=timezone.utc)}: Memory usage before deleting global model")
     print_memory_usage()
-    print(f"{datetime.now(tz=timezone.utc)}: Attempting to delete global model from memory")
-    print(f"Number of references to global_model (if > 2, deleting will not free up memory): {sys.getrefcount(global_model)}")
-    print(f"Number of references to global_C: {sys.getrefcount(global_C)}")
-    print(f"Number of references to global_d: {sys.getrefcount(global_d)}")
-    print(f"Number of references to global_dsense: {sys.getrefcount(global_dsense)}")
-    print(f"Number of references to global_ctrs: {sys.getrefcount(global_ctrs)}")
-    del global_model, global_C, global_d, global_dsense, global_ctrs
-    gc.collect()
+
+    return samples, global_model_dir, sample_info, clean_samp_names, ex_mets
+
+def community_gem_builder(abun_filepath: str, mod_filepath: str, out_filepath: str, workers=1) -> tuple:
+    """
+    Inspired by mgpipe.m code.
+    Main pipeline which inputs the GEMs data and accesses the different functions.
+
+    INPUTS:
+        abun_path: path to the microbe abundance .csv file
+            Formatting for the microbe abundance:
+                The columns should have the names of the .mat files of the microbe you want to load
+                See file normCoverage_smaller.csv for template example   
+        modpath: path to folder with all AGORA models 
+            E.g. "~/data_input/AGORA103/"
+        respath: path where the community models will be output (defaults to same folder as )
+            E.g. "~/results/"
+        dietpath: path to the AGORA compatible diet (for community model) .csv file
+            E.g. "~/data_input/AverageEU_diet_fluxes.csv"
+  
+    OUTPUTS:
+        All sample community models to a specified local folder
+        tuple: (clean_samp_names, microbe_names, ex_mets)
+            clean_samp_names: List of cleaned sample names (valid Python identifiers)
+            microbe_names: List of microbe names in the model
+            ex_mets: List of extracellular metabolites in the model
+    """
+
+    print(f"{datetime.now(tz=timezone.utc)}: Starting MiGeMox pipeline".center(40, '*'))
+    samples, global_model_dir, sample_info, clean_samp_names, ex_mets = build_and_save_global_model(
+        abun_filepath, 
+        mod_filepath, 
+        out_filepath, 
+        workers
+    )
+    print(f"{datetime.now(tz=timezone.utc)}: Garbage collecting...")
+    gc.collect() # force garbage collect to ensure memory is freed
+    print(f"{datetime.now(tz=timezone.utc)}: Garbage collecting complete.")
 
     print(f"{datetime.now(tz=timezone.utc)}: Memory usage after deleting global model")
     print_memory_usage()
