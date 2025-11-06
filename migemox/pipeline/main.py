@@ -97,7 +97,10 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
         # mets = [x.split('[')[0] for x in ex_mets]
         diet_mod_dir_for_contributions = os.path.join(res_filepath, 'Diet')
         pos_net_prod = extract_positive_net_prod_constraints(Path(res_filepath) / 'inputDiet_net_secretion_fluxes.csv')
+        print(f"pos_net_prod: {pos_net_prod}")
         mets = sorted(list(pos_net_prod.keys()))
+
+        print(f"mets: {mets}")
 
         kwargs = dict(
             diet_mod_dir=diet_mod_dir_for_contributions,
