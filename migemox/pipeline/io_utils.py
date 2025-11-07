@@ -11,6 +11,7 @@ import pandas as pd
 import psutil
 import os
 import re
+import cobra
 from cobra.io import load_matlab_model
 from cobra.util import create_stoichiometric_matrix
 import numpy as np
@@ -20,6 +21,36 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 from scipy.sparse import csr_matrix
+import pickle
+
+def save_cobra_model_pickle(model: cobra.Model, filename: str):
+    """
+    Save a COBRApy model to a file using pickle.
+
+    Args:
+        model (cobra.Model): The COBRA model object to save.
+        filename (str): Path to the output pickle file.
+    """
+    print(f"Saving model to {filename} (this may take some time for large models)")
+    with open(filename, "wb") as f:
+        pickle.dump(model, f, protocol=pickle.HIGHEST_PROTOCOL)
+    print(f"Model saved as pickle to {filename}")
+
+def load_cobra_model_pickle(filename: str) -> cobra.Model:
+    """
+    Load a COBRApy model from a pickle file.
+
+    Args:
+        filename (str): Path to the input pickle file.
+
+    Returns:
+        cobra.Model: The loaded COBRA model.
+    """
+    print(f"Loading model from {filename}")
+    with open(filename, "rb") as f:
+        model = pickle.load(f)
+    print(f"Model loaded from pickle file {filename}")
+    return model
 
 def ensure_parent_dir(file_path: str):
     """
