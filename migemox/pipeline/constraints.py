@@ -105,7 +105,7 @@ def build_global_coupling_constraints(model: cobra.Model, microbe_list: list[str
     return C, d, dsense, ctrs
 
 def prune_coupling_constraints_by_microbe(
-    global_model: cobra.Model,
+    global_rxn_ids: list[str],
     global_C: csr_matrix,
     global_d: np.ndarray,
     global_dsense: np.ndarray,
@@ -118,7 +118,7 @@ def prune_coupling_constraints_by_microbe(
     microbe present in the sample-specific model.
 
     Args:
-        global_model (cobra.Model): The original global community model.
+        global_rxn_ids (list[str]): The list of all the reaction IDs in the global model.
         global_C (csr_matrix): The global coupling matrix.
         global_d (np.ndarray): The global 'd' vector.
         global_dsense (np.ndarray): The global 'dsense' vector.
@@ -157,7 +157,6 @@ def prune_coupling_constraints_by_microbe(
     if keep_rows:
           # Remap columns to match sample-specific model
         sample_rxn_ids = [r.id for r in sample_model.reactions]
-        global_rxn_ids = [r.id for r in global_model.reactions]
 
         global_rxn_idx_map = {rid: i for i, rid in enumerate(global_rxn_ids)}
 

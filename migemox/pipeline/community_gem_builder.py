@@ -425,9 +425,9 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
     global_matr_path = os.path.join(global_model_dir, "global_matr.npz")
     global_vec_path = os.path.join(global_model_dir, "global_vecs.npz")
     print(f"{datetime.now(tz=timezone.utc)}: Loading model")
-    global_model = load_cobra_model_pickle(global_model_path) # need to save original global model for later, so load this one and leave it uncahanged
-    print(f"{datetime.now(tz=timezone.utc)}: Loading second copy of model")
-    model = load_cobra_model_pickle(global_model_path) # also load this one to avoid copying; this is the one we will change
+    model = load_cobra_model_pickle(global_model_path)
+    # need the list of reaction IDs from the original global model for later, so save them
+    global_rxn_ids = [r.id for r in model.reactions]
     print(f"{datetime.now(tz=timezone.utc)}: Loading other matrices")
     global_C = sparse.load_npz(global_matr_path)
     data = np.load(global_vec_path, allow_pickle=True)
@@ -462,7 +462,7 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
     # Prune coupling constraints from the global model (C, dsense, d, ctrs)
     print(f"{datetime.now(tz=timezone.utc)}: Pruning coupling constraints from global model")
     sample_C, sample_d, sample_dsense, sample_ctrs = prune_coupling_constraints_by_microbe(
-        global_model, global_C, global_d, global_dsense, global_ctrs, present_microbe, model
+        global_rxn_ids, global_C, global_d, global_dsense, global_ctrs, present_microbe, model
     )
 
     # Ensuring the reversablity fits all compartments
