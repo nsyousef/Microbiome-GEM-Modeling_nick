@@ -427,6 +427,7 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
     print(f"{datetime.now(tz=timezone.utc)}: Loading model")
     model = load_cobra_model_pickle(global_model_path)
     # need the list of reaction IDs from the original global model for later, so save them
+    print(f"{datetime.now(tz=timezone.utc)}: Extracting rxn IDs from model")
     global_rxn_ids = [r.id for r in model.reactions]
     print(f"{datetime.now(tz=timezone.utc)}: Loading other matrices")
     global_C = sparse.load_npz(global_matr_path)
