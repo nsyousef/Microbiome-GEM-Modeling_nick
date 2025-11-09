@@ -30,18 +30,20 @@ from datetime import datetime, timezone
 
 def save_cobra_model_pickle(model: cobra.Model, filename: str):
     """
-    Safely save a COBRApy model to a pickle file without including solver state.
-    Parallel-safe (uses file locks) and prevents solver serialization.
+    Safely save a COBRApy model to a pickle file without including the solver.
+    Parallel-safe using file locks.
     
     Args:
-        model (cobra.Model): COBRA model object to save.
-        filename (str): Path to output pickle file.
+        model (cobra.Model): COBRA model to save
+        filename (str): Path to output pickle file
     """
-    print(f"{datetime.now(tz=timezone.utc)}: Saving model to {filename} (solver state removed)")
+    print(f"{datetime.now(tz=timezone.utc)}: Saving model to {filename} (solver temporarily removed)")
 
-    # Backup the solver and temporarily disable
+    # Backup solver
     solver_backup = model.solver
-    model.solver = None  # None instead of "null"
+
+    # Remove solver attribute for safe pickling
+    delattr(model, "solver")
 
     tmp_filename = filename + ".tmp"
 
@@ -55,7 +57,7 @@ def save_cobra_model_pickle(model: cobra.Model, filename: str):
         os.replace(tmp_filename, filename)
         print(f"{datetime.now(tz=timezone.utc)}: Model saved to {filename}")
     finally:
-        # Restore solver after saving
+        # Restore solver
         model.solver = solver_backup
 
 def load_cobra_model_pickle(
@@ -66,18 +68,18 @@ def load_cobra_model_pickle(
     max_retries: int = 10
 ) -> cobra.Model:
     """
-    Safely load a COBRApy model from a pickle file without triggering solver initialization.
-    Parallel-safe and optionally uses a local copy for HPC efficiency.
+    Load a COBRApy model from a pickle file safely without initializing the solver.
+    Supports parallel reads and optional local scratch copy for HPC efficiency.
     
     Args:
-        filename (str): Path to input pickle file.
-        solver (str | None): Solver to attach after loading (e.g. "cplex", "glpk").
-        use_local_copy (bool): If True, copy file to local temporary directory first.
-        retry_wait (int): Seconds to wait before retrying if file is temporarily locked.
-        max_retries (int): Number of retry attempts for locked file.
+        filename (str): Path to input pickle file
+        solver (str | None): Solver to attach after loading (e.g., 'cplex', 'glpk'). Default: None
+        use_local_copy (bool): Copy to local scratch first to avoid NFS/Lustre bottlenecks
+        retry_wait (int): Seconds to wait before retrying if file locked
+        max_retries (int): Maximum retry attempts
     
     Returns:
-        cobra.Model: Loaded COBRA model.
+        cobra.Model: Loaded COBRA model
     """
     print(f"{datetime.now(tz=timezone.utc)}: Preparing to load model from {filename}")
 
@@ -85,6 +87,7 @@ def load_cobra_model_pickle(
     if use_local_copy:
         tmp_dir = tempfile.gettempdir()
         local_filename = os.path.join(tmp_dir, os.path.basename(filename))
+        # Copy if not exist or older than original
         if not os.path.exists(local_filename) or os.path.getmtime(local_filename) < os.path.getmtime(filename):
             print(f"{datetime.now(tz=timezone.utc)}: Copying model to local scratch: {local_filename}")
             shutil.copy2(filename, local_filename)
@@ -92,24 +95,21 @@ def load_cobra_model_pickle(
     else:
         load_path = filename
 
-    # Backup global solver and temporarily disable
-    config = cobra.Configuration()
-    prev_solver = config.solver
-    config.solver = None  # None disables solver initialization
-
     attempt = 0
     model = None
 
     while attempt < max_retries:
         try:
             with open(load_path, "rb") as f:
-                fcntl.flock(f, fcntl.LOCK_SH)  # shared lock for reading
+                # Shared lock for parallel-safe reading
+                fcntl.flock(f, fcntl.LOCK_SH)
                 model = pickle.load(f)
                 fcntl.flock(f, fcntl.LOCK_UN)
             break
         except (BlockingIOError, OSError):
             attempt += 1
             print(f"{datetime.now(tz=timezone.utc)}: File locked, retrying ({attempt}/{max_retries})...")
+            import time
             time.sleep(retry_wait)
 
     if model is None:
@@ -117,13 +117,10 @@ def load_cobra_model_pickle(
 
     print(f"{datetime.now(tz=timezone.utc)}: Model successfully loaded from {load_path}")
 
-    # Reattach solver if requested
-    if solver:
+    # Attach solver if requested
+    if solver is not None:
         print(f"{datetime.now(tz=timezone.utc)}: Attaching solver '{solver}'")
         model.solver = solver
-
-    # Restore global solver
-    config.solver = prev_solver
 
     return model
 
