@@ -19,7 +19,7 @@ import re
 import sys
 import gc
 from migemox.pipeline.constraints import build_global_coupling_constraints, prune_coupling_constraints_by_microbe
-from migemox.pipeline.io_utils import make_community_gem_dict, print_memory_usage, ensure_parent_dir, save_cobra_model_pickle, load_cobra_model_pickle
+from migemox.pipeline.io_utils import make_community_gem_dict, print_memory_usage, ensure_parent_dir, clean_and_save_json_model_large
 from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
 from datetime import datetime, timezone
@@ -400,7 +400,7 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
         - prunes zero-abundance microbe
         - adds diet constraints
         - adds community biomass
-        - saves as .pickle
+        - saves as .json
 
     Parameters:
         sample_name: column name in abundance_df
@@ -421,11 +421,11 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
         return save_path
     print(f"{datetime.now(tz=timezone.utc)}: Personalized model for {sample_name} does not exist.")
     print(f"{datetime.now(tz=timezone.utc)}: Loading global model")
-    global_model_path = os.path.join(global_model_dir, "global_model.pickle")
+    global_model_path = os.path.join(global_model_dir, "global_model.json")
     global_matr_path = os.path.join(global_model_dir, "global_matr.npz")
     global_vec_path = os.path.join(global_model_dir, "global_vecs.npz")
     print(f"{datetime.now(tz=timezone.utc)}: Loading model")
-    model = load_cobra_model_pickle(global_model_path, solver="cplex")
+    model = cobra.io.load_json_model(global_model_path, solver="cplex")
     # need the list of reaction IDs from the original global model for later, so save them
     print(f"{datetime.now(tz=timezone.utc)}: Extracting rxn IDs from model")
     global_rxn_ids = [r.id for r in model.reactions]
@@ -532,11 +532,11 @@ def build_and_save_global_model(abun_filepath: str, mod_filepath: str, out_filep
     # save global model and ex_mets for later, to allow for restarting from this point
     global_model_dir = os.path.join(out_filepath, "global_model")
     print(f"{datetime.now(tz=timezone.utc)}: Writing global model to: {global_model_dir}")
-    global_model_path = os.path.join(global_model_dir, "global_model.pickle")
+    global_model_path = os.path.join(global_model_dir, "global_model.json")
     global_matr_path = os.path.join(global_model_dir, "global_matr.npz")
     global_vec_path = os.path.join(global_model_dir, "global_vecs.npz")
     ensure_parent_dir(global_model_path)
-    save_cobra_model_pickle(global_model, global_model_path)
+    clean_and_save_json_model_large(global_model, global_model_path)
     sparse.save_npz(global_matr_path, global_C)
     np.savez(global_vec_path, global_d=global_d, global_dsense=global_dsense, global_ctrs=global_ctrs)
     print(f"{datetime.now(tz=timezone.utc)}: Global model written.")

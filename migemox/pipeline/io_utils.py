@@ -12,7 +12,7 @@ import psutil
 import os
 import re
 import cobra
-from cobra.io import load_matlab_model
+from cobra.io import load_matlab_model, save_json_model
 from cobra.util import create_stoichiometric_matrix
 import numpy as np
 from typing import Dict, List, Tuple, Optional
@@ -21,108 +21,51 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 from scipy.sparse import csr_matrix
-import pickle
 import shutil
-import time
-import fcntl
 import tempfile
 from datetime import datetime, timezone
 
-def save_cobra_model_pickle(model: cobra.Model, filename: str):
+def clean_and_save_json_model_large(model: cobra.Model, filename: str):
     """
-    Safely save a COBRApy model to a pickle file without including the solver.
-    Parallel-safe using file locks.
-    
+    Clean nulls in a large COBRApy model and save it as JSON efficiently.
+    In-place cleaning avoids large memory overhead.
+    Uses temporary file + atomic move for safe writing on parallel systems.
+
     Args:
         model (cobra.Model): COBRA model to save
-        filename (str): Path to output pickle file
+        filename (str): Path to output JSON file
     """
-    print(f"{datetime.now(tz=timezone.utc)}: Saving model to {filename} (solver temporarily removed)")
+    print(f"{datetime.now(tz=timezone.utc)}: Cleaning model in-place for JSON save: {filename}")
 
-    # Backup solver
-    solver_backup = model.solver
+    # In-place cleaning of reactions
+    for r in model.reactions:
+        if r.lower_bound is None:
+            r.lower_bound = 0.0
+        if r.upper_bound is None:
+            r.upper_bound = 1000.0
+        if r.objective_coefficient is None:
+            r.objective_coefficient = 0.0
+        if r.gene_reaction_rule is None:
+            r.gene_reaction_rule = ""
 
-    # Remove solver attribute for safe pickling
-    delattr(model, "solver")
+    # In-place cleaning of metabolites
+    for m in model.metabolites:
+        if m.formula is None:
+            m.formula = ""
+        if m.charge is None:
+            m.charge = 0
+        if m.compartment is None:
+            m.compartment = ""
 
-    tmp_filename = filename + ".tmp"
+    # Save via temporary file and move atomically for safety
+    tmp_dir = tempfile.gettempdir()
+    tmp_filename = os.path.join(tmp_dir, os.path.basename(filename) + ".tmp")
 
-    try:
-        with open(tmp_filename, "wb") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            pickle.dump(model, f, protocol=pickle.HIGHEST_PROTOCOL)
-            f.flush()
-            os.fsync(f.fileno())
-            fcntl.flock(f, fcntl.LOCK_UN)
-        os.replace(tmp_filename, filename)
-        print(f"{datetime.now(tz=timezone.utc)}: Model saved to {filename}")
-    finally:
-        # Restore solver
-        model.solver = solver_backup
+    save_json_model(model, tmp_filename)
+    # Atomic move to final location
+    shutil.move(tmp_filename, filename)
 
-def load_cobra_model_pickle(
-    filename: str,
-    solver: str | None = None,
-    use_local_copy: bool = True,
-    retry_wait: int = 5,
-    max_retries: int = 10
-) -> cobra.Model:
-    """
-    Load a COBRApy model from a pickle file safely without initializing the solver.
-    Supports parallel reads and optional local scratch copy for HPC efficiency.
-    
-    Args:
-        filename (str): Path to input pickle file
-        solver (str | None): Solver to attach after loading (e.g., 'cplex', 'glpk'). Default: None
-        use_local_copy (bool): Copy to local scratch first to avoid NFS/Lustre bottlenecks
-        retry_wait (int): Seconds to wait before retrying if file locked
-        max_retries (int): Maximum retry attempts
-    
-    Returns:
-        cobra.Model: Loaded COBRA model
-    """
-    print(f"{datetime.now(tz=timezone.utc)}: Preparing to load model from {filename}")
-
-    # Copy to local scratch if requested
-    if use_local_copy:
-        tmp_dir = tempfile.gettempdir()
-        local_filename = os.path.join(tmp_dir, os.path.basename(filename))
-        # Copy if not exist or older than original
-        if not os.path.exists(local_filename) or os.path.getmtime(local_filename) < os.path.getmtime(filename):
-            print(f"{datetime.now(tz=timezone.utc)}: Copying model to local scratch: {local_filename}")
-            shutil.copy2(filename, local_filename)
-        load_path = local_filename
-    else:
-        load_path = filename
-
-    attempt = 0
-    model = None
-
-    while attempt < max_retries:
-        try:
-            with open(load_path, "rb") as f:
-                # Shared lock for parallel-safe reading
-                fcntl.flock(f, fcntl.LOCK_SH)
-                model = pickle.load(f)
-                fcntl.flock(f, fcntl.LOCK_UN)
-            break
-        except (BlockingIOError, OSError):
-            attempt += 1
-            print(f"{datetime.now(tz=timezone.utc)}: File locked, retrying ({attempt}/{max_retries})...")
-            import time
-            time.sleep(retry_wait)
-
-    if model is None:
-        raise RuntimeError(f"Failed to read {filename} after {max_retries} retries.")
-
-    print(f"{datetime.now(tz=timezone.utc)}: Model successfully loaded from {load_path}")
-
-    # Attach solver if requested
-    if solver is not None:
-        print(f"{datetime.now(tz=timezone.utc)}: Attaching solver '{solver}'")
-        model.solver = solver
-
-    return model
+    print(f"{datetime.now(tz=timezone.utc)}: Model saved successfully to {filename}")
 
 def ensure_parent_dir(file_path: str):
     """
