@@ -39,9 +39,9 @@ def save_cobra_model_pickle(model: cobra.Model, filename: str):
     """
     print(f"{datetime.now(tz=timezone.utc)}: Saving model to {filename} (solver state removed)")
 
-    # Remove solver reference before pickling
+    # Backup the solver and temporarily disable
     solver_backup = model.solver
-    model.solver = "null"
+    model.solver = None  # None instead of "null"
 
     tmp_filename = filename + ".tmp"
 
@@ -55,6 +55,7 @@ def save_cobra_model_pickle(model: cobra.Model, filename: str):
         os.replace(tmp_filename, filename)
         print(f"{datetime.now(tz=timezone.utc)}: Model saved to {filename}")
     finally:
+        # Restore solver after saving
         model.solver = solver_backup
 
 def load_cobra_model_pickle(
@@ -80,7 +81,7 @@ def load_cobra_model_pickle(
     """
     print(f"{datetime.now(tz=timezone.utc)}: Preparing to load model from {filename}")
 
-    # Decide file path (local scratch if requested)
+    # Copy to local scratch if requested
     if use_local_copy:
         tmp_dir = tempfile.gettempdir()
         local_filename = os.path.join(tmp_dir, os.path.basename(filename))
@@ -91,10 +92,10 @@ def load_cobra_model_pickle(
     else:
         load_path = filename
 
-    # Save current solver config and disable solver for safe load
+    # Backup global solver and temporarily disable
     config = cobra.Configuration()
     prev_solver = config.solver
-    config.solver = "null"
+    config.solver = None  # None disables solver initialization
 
     attempt = 0
     model = None
@@ -121,7 +122,7 @@ def load_cobra_model_pickle(
         print(f"{datetime.now(tz=timezone.utc)}: Attaching solver '{solver}'")
         model.solver = solver
 
-    # Restore global COBRApy configuration
+    # Restore global solver
     config.solver = prev_solver
 
     return model
