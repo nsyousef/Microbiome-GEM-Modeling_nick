@@ -21,114 +21,87 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 from scipy.sparse import csr_matrix
-import shutil
-import tempfile
 from datetime import datetime, timezone
-import math
+import pickle
+from contextlib import contextmanager
+from filelock import FileLock
+
+# -------------------------------
+# Helper: timestamped logging
+# -------------------------------
+def _log(msg: str):
+    print(f"{datetime.now(tz=timezone.utc)}: {msg}", flush=True)
 
 
-def clean_and_save_json_model_large(model: cobra.Model, filename: str, verify: bool = False):
-    """
-    Clean NaNs/nulls in a large COBRApy model and save it as JSON safely and efficiently.
-    Replaces NaN or None with default values to avoid JSON encoding errors.
-
-    Parameters
-    ----------
-    model : cobra.Model
-        The COBRApy model to clean and save.
-    filename : str
-        Path to save the cleaned JSON model.
-    verify : bool, optional
-        If True, prints all locations where NaN/None values were found and replaced.
-    """
-    print(f"{datetime.now(tz=timezone.utc)}: Cleaning model for JSON export -> {filename}")
-
-    issues = []  # collect any detected problems
-
-    # Helper for logging
-    def log_issue(category, obj_id, field, old_val, new_val):
-        if verify:
-            issues.append((category, obj_id, field, old_val, new_val))
-
-    # Clean reactions
-    for r in model.reactions:
-        if r.lower_bound is None or (isinstance(r.lower_bound, float) and math.isnan(r.lower_bound)):
-            log_issue("reaction", r.id, "lower_bound", r.lower_bound, 0.0)
-            r.lower_bound = 0.0
-        if r.upper_bound is None or (isinstance(r.upper_bound, float) and math.isnan(r.upper_bound)):
-            log_issue("reaction", r.id, "upper_bound", r.upper_bound, 1000.0)
-            r.upper_bound = 1000.0
-        if r.objective_coefficient is None or (isinstance(r.objective_coefficient, float) and math.isnan(r.objective_coefficient)):
-            log_issue("reaction", r.id, "objective_coefficient", r.objective_coefficient, 0.0)
-            r.objective_coefficient = 0.0
-        if r.gene_reaction_rule is None:
-            log_issue("reaction", r.id, "gene_reaction_rule", None, "")
-            r.gene_reaction_rule = ""
-
-        # Clean annotations/notes
-        if hasattr(r, "annotation"):
-            for k, v in list(r.annotation.items()):
-                if isinstance(v, float) and math.isnan(v):
-                    log_issue("reaction", r.id, f"annotation[{k}]", v, None)
-                    r.annotation[k] = None
-        if hasattr(r, "notes"):
-            for k, v in list(r.notes.items()):
-                if isinstance(v, float) and math.isnan(v):
-                    log_issue("reaction", r.id, f"notes[{k}]", v, None)
-                    r.notes[k] = None
-
-    # Clean metabolites
-    for m in model.metabolites:
-        if m.formula is None:
-            log_issue("metabolite", m.id, "formula", None, "")
-            m.formula = ""
-        if m.charge is None or (isinstance(m.charge, float) and math.isnan(m.charge)):
-            log_issue("metabolite", m.id, "charge", m.charge, 0)
-            m.charge = 0
-        if m.compartment is None:
-            log_issue("metabolite", m.id, "compartment", None, "")
-            m.compartment = ""
-
-        if hasattr(m, "annotation"):
-            for k, v in list(m.annotation.items()):
-                if isinstance(v, float) and math.isnan(v):
-                    log_issue("metabolite", m.id, f"annotation[{k}]", v, None)
-                    m.annotation[k] = None
-        if hasattr(m, "notes"):
-            for k, v in list(m.notes.items()):
-                if isinstance(v, float) and math.isnan(v):
-                    log_issue("metabolite", m.id, f"notes[{k}]", v, None)
-                    m.notes[k] = None
-
-    # Clean model-level attributes
-    if hasattr(model, "objective"):
+# -------------------------------
+# Helper: temporary attribute patch
+# -------------------------------
+@contextmanager
+def _temporary_solver_detach(model: cobra.Model):
+    """Temporarily remove the solver from a COBRA model for pickling."""
+    # Save current solver info without triggering solver reset
+    solver_attr = getattr(model, "_solver", None)
+    if solver_attr is not None:
         try:
-            if model.objective is None or (isinstance(model.objective, float) and math.isnan(model.objective)):
-                log_issue("model", model.id, "objective", model.objective, 0.0)
-                model.objective = 0.0
-        except Exception:
-            pass
+            model.__dict__["_solver"] = None  # directly clear solver ref
+            _log("Temporarily detached solver before pickling.")
+        except Exception as e:
+            _log(f"Warning: could not detach solver safely: {e}")
+    try:
+        yield
+    finally:
+        # Restore if possible
+        if solver_attr is not None:
+            model.__dict__["_solver"] = solver_attr
+            _log("Reattached solver after pickling.")
 
-    # Write via a temporary file (atomic)
-    tmp_dir = tempfile.gettempdir()
-    tmp_filename = os.path.join(tmp_dir, os.path.basename(filename) + ".tmp")
 
-    save_json_model(model, tmp_filename)
-    shutil.move(tmp_filename, filename)
+# -------------------------------
+# Save function
+# -------------------------------
+def save_cobra_model_pickle_large(model: cobra.Model, filename: str):
+    """
+    Save a COBRApy model to a pickle file safely without serializing the solver.
 
-    print(f"{datetime.now(tz=timezone.utc)}: Model cleaned and saved successfully to {filename}")
+    This avoids hangs caused by pickling solver interface objects.
+    """
+    lockfile = filename + ".lock"
+    lock = FileLock(lockfile)
+    _log(f"Saving model to {filename} (detaching solver if present)")
+    with lock:
+        with _temporary_solver_detach(model):
+            with open(filename, "wb") as f:
+                pickle.dump(model, f, protocol=pickle.HIGHEST_PROTOCOL)
+    _log(f"Model written to {filename}")
 
-    # If verify mode is enabled, print summary
-    if verify and issues:
-        print("\n=== Cleaned NaN/None values summary ===")
-        for cat, obj_id, field, old, new in issues[:50]:
-            print(f" - [{cat}] {obj_id}: {field} = {old} → {new}")
-        if len(issues) > 50:
-            print(f"... and {len(issues) - 50} more issues found.\n")
-        else:
-            print()
-    elif verify:
-        print("No NaN or None values were found.")
+
+# -------------------------------
+# Load function
+# -------------------------------
+def load_cobra_model_pickle_large(filename: str, solver: str | None = "cplex") -> cobra.Model:
+    """
+    Load a COBRApy model from a solver-stripped pickle file.
+    Optionally reattach a solver (default: 'cplex').
+    """
+    lockfile = filename + ".lock"
+    lock = FileLock(lockfile)
+    _log(f"Loading pickle {filename} (shared lock)")
+    with lock:
+        with open(filename, "rb") as f:
+            model = pickle.load(f)
+    _log("Pickle loaded successfully.")
+
+    # Attempt solver reattachment
+    if solver:
+        try:
+            model.solver = solver
+            _log(f"Solver '{solver}' reattached successfully.")
+        except Exception as e:
+            _log(f"Warning: could not reattach solver '{solver}': {e}")
+    else:
+        _log("No solver reattached (solver=None).")
+
+    return model
 
 def ensure_parent_dir(file_path: str):
     """
