@@ -24,48 +24,111 @@ from scipy.sparse import csr_matrix
 import shutil
 import tempfile
 from datetime import datetime, timezone
+import math
 
-def clean_and_save_json_model_large(model: cobra.Model, filename: str):
+
+def clean_and_save_json_model_large(model: cobra.Model, filename: str, verify: bool = False):
     """
-    Clean nulls in a large COBRApy model and save it as JSON efficiently.
-    In-place cleaning avoids large memory overhead.
-    Uses temporary file + atomic move for safe writing on parallel systems.
+    Clean NaNs/nulls in a large COBRApy model and save it as JSON safely and efficiently.
+    Replaces NaN or None with default values to avoid JSON encoding errors.
 
-    Args:
-        model (cobra.Model): COBRA model to save
-        filename (str): Path to output JSON file
+    Parameters
+    ----------
+    model : cobra.Model
+        The COBRApy model to clean and save.
+    filename : str
+        Path to save the cleaned JSON model.
+    verify : bool, optional
+        If True, prints all locations where NaN/None values were found and replaced.
     """
-    print(f"{datetime.now(tz=timezone.utc)}: Cleaning model in-place for JSON save: {filename}")
+    print(f"{datetime.now(tz=timezone.utc)}: Cleaning model for JSON export -> {filename}")
 
-    # In-place cleaning of reactions
+    issues = []  # collect any detected problems
+
+    # Helper for logging
+    def log_issue(category, obj_id, field, old_val, new_val):
+        if verify:
+            issues.append((category, obj_id, field, old_val, new_val))
+
+    # Clean reactions
     for r in model.reactions:
-        if r.lower_bound is None:
+        if r.lower_bound is None or (isinstance(r.lower_bound, float) and math.isnan(r.lower_bound)):
+            log_issue("reaction", r.id, "lower_bound", r.lower_bound, 0.0)
             r.lower_bound = 0.0
-        if r.upper_bound is None:
+        if r.upper_bound is None or (isinstance(r.upper_bound, float) and math.isnan(r.upper_bound)):
+            log_issue("reaction", r.id, "upper_bound", r.upper_bound, 1000.0)
             r.upper_bound = 1000.0
-        if r.objective_coefficient is None:
+        if r.objective_coefficient is None or (isinstance(r.objective_coefficient, float) and math.isnan(r.objective_coefficient)):
+            log_issue("reaction", r.id, "objective_coefficient", r.objective_coefficient, 0.0)
             r.objective_coefficient = 0.0
         if r.gene_reaction_rule is None:
+            log_issue("reaction", r.id, "gene_reaction_rule", None, "")
             r.gene_reaction_rule = ""
 
-    # In-place cleaning of metabolites
+        # Clean annotations/notes
+        if hasattr(r, "annotation"):
+            for k, v in list(r.annotation.items()):
+                if isinstance(v, float) and math.isnan(v):
+                    log_issue("reaction", r.id, f"annotation[{k}]", v, None)
+                    r.annotation[k] = None
+        if hasattr(r, "notes"):
+            for k, v in list(r.notes.items()):
+                if isinstance(v, float) and math.isnan(v):
+                    log_issue("reaction", r.id, f"notes[{k}]", v, None)
+                    r.notes[k] = None
+
+    # Clean metabolites
     for m in model.metabolites:
         if m.formula is None:
+            log_issue("metabolite", m.id, "formula", None, "")
             m.formula = ""
-        if m.charge is None:
+        if m.charge is None or (isinstance(m.charge, float) and math.isnan(m.charge)):
+            log_issue("metabolite", m.id, "charge", m.charge, 0)
             m.charge = 0
         if m.compartment is None:
+            log_issue("metabolite", m.id, "compartment", None, "")
             m.compartment = ""
 
-    # Save via temporary file and move atomically for safety
+        if hasattr(m, "annotation"):
+            for k, v in list(m.annotation.items()):
+                if isinstance(v, float) and math.isnan(v):
+                    log_issue("metabolite", m.id, f"annotation[{k}]", v, None)
+                    m.annotation[k] = None
+        if hasattr(m, "notes"):
+            for k, v in list(m.notes.items()):
+                if isinstance(v, float) and math.isnan(v):
+                    log_issue("metabolite", m.id, f"notes[{k}]", v, None)
+                    m.notes[k] = None
+
+    # Clean model-level attributes
+    if hasattr(model, "objective"):
+        try:
+            if model.objective is None or (isinstance(model.objective, float) and math.isnan(model.objective)):
+                log_issue("model", model.id, "objective", model.objective, 0.0)
+                model.objective = 0.0
+        except Exception:
+            pass
+
+    # Write via a temporary file (atomic)
     tmp_dir = tempfile.gettempdir()
     tmp_filename = os.path.join(tmp_dir, os.path.basename(filename) + ".tmp")
 
     save_json_model(model, tmp_filename)
-    # Atomic move to final location
     shutil.move(tmp_filename, filename)
 
-    print(f"{datetime.now(tz=timezone.utc)}: Model saved successfully to {filename}")
+    print(f"{datetime.now(tz=timezone.utc)}: Model cleaned and saved successfully to {filename}")
+
+    # If verify mode is enabled, print summary
+    if verify and issues:
+        print("\n=== Cleaned NaN/None values summary ===")
+        for cat, obj_id, field, old, new in issues[:50]:
+            print(f" - [{cat}] {obj_id}: {field} = {old} → {new}")
+        if len(issues) > 50:
+            print(f"... and {len(issues) - 50} more issues found.\n")
+        else:
+            print()
+    elif verify:
+        print("No NaN or None values were found.")
 
 def ensure_parent_dir(file_path: str):
     """
