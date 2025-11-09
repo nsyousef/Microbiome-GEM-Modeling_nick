@@ -425,7 +425,7 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
     global_matr_path = os.path.join(global_model_dir, "global_matr.npz")
     global_vec_path = os.path.join(global_model_dir, "global_vecs.npz")
     print(f"{datetime.now(tz=timezone.utc)}: Loading model")
-    model = cobra.io.load_json_model(global_model_path, solver="cplex")
+    model = cobra.io.load_json_model(global_model_path)
     # need the list of reaction IDs from the original global model for later, so save them
     print(f"{datetime.now(tz=timezone.utc)}: Extracting rxn IDs from model")
     global_rxn_ids = [r.id for r in model.reactions]
