@@ -81,17 +81,23 @@ def save_cobra_model_pickle_large(model: cobra.Model, filename: str):
 def load_cobra_model_pickle_large(filename: str, solver: str | None = "cplex") -> cobra.Model:
     """
     Load a COBRApy model from a solver-stripped pickle file.
-    Optionally reattach a solver (default: 'cplex').
+    Fully resets solver internals, then optionally reattaches a solver.
     """
     lockfile = filename + ".lock"
     lock = FileLock(lockfile)
     _log(f"Loading pickle {filename} (shared lock)")
+
     with lock:
         with open(filename, "rb") as f:
             model = pickle.load(f)
+
     _log("Pickle loaded successfully.")
 
-    # Attempt solver reattachment
+    # --- Critical: wipe any half-present solver ---
+    if hasattr(model, "_solver"):
+        model._solver = None   # fully wipe solver state
+
+    # --- Reattach solver ---
     if solver:
         try:
             model.solver = solver
