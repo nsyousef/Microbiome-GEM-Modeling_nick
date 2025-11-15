@@ -26,63 +26,181 @@ import pickle
 from contextlib import contextmanager
 from filelock import FileLock
 
-# -------------------------------
-# Helper: timestamped logging
-# -------------------------------
+# io_utils.py
+import os
+import pickle
+import time
+from contextlib import contextmanager
+from pathlib import Path
+from filelock import FileLock
+from datetime import datetime, timezone
+import cobra
+
 def _log(msg: str):
     print(f"{datetime.now(tz=timezone.utc)}: {msg}", flush=True)
 
 
-# -------------------------------
-# Helper: temporary attribute patch
-# -------------------------------
 @contextmanager
 def _temporary_solver_detach(model: cobra.Model):
-    """Temporarily remove the solver from a COBRA model for pickling."""
-    # Save current solver info without triggering solver reset
+    """
+    Context manager that temporarily clears the private solver reference
+    (model._solver) for safe pickling, and restores it afterwards.
+    """
     solver_attr = getattr(model, "_solver", None)
+    detached = False
     if solver_attr is not None:
         try:
-            model.__dict__["_solver"] = None  # directly clear solver ref
+            # Clear underlying reference directly (avoid property setter)
+            model.__dict__["_solver"] = None
+            detached = True
             _log("Temporarily detached solver before pickling.")
         except Exception as e:
             _log(f"Warning: could not detach solver safely: {e}")
     try:
         yield
     finally:
-        # Restore if possible
-        if solver_attr is not None:
-            model.__dict__["_solver"] = solver_attr
-            _log("Reattached solver after pickling.")
+        if detached:
+            try:
+                model.__dict__["_solver"] = solver_attr
+                _log("Reattached solver after pickling.")
+            except Exception as e:
+                _log(f"Warning: could not restore solver after pickling: {e}")
 
 
-# -------------------------------
-# Save function
-# -------------------------------
 def save_cobra_model_pickle_large(model: cobra.Model, filename: str):
     """
-    Save a COBRApy model to a pickle file safely without serializing the solver.
-
-    This avoids hangs caused by pickling solver interface objects.
+    Save a COBRApy model to a pickle file safely without serializing the solver object.
+    Uses a file lock to avoid write races and writes atomically.
     """
+    filename = str(filename)
     lockfile = filename + ".lock"
     lock = FileLock(lockfile)
     _log(f"Saving model to {filename} (detaching solver if present)")
+
     with lock:
         with _temporary_solver_detach(model):
-            with open(filename, "wb") as f:
+            tmp_path = filename + ".tmp"
+            with open(tmp_path, "wb") as f:
+                # Use highest protocol supported by current Python
                 pickle.dump(model, f, protocol=pickle.HIGHEST_PROTOCOL)
+            # atomic replace
+            os.replace(tmp_path, filename)
+
     _log(f"Model written to {filename}")
 
 
-# -------------------------------
-# Load function
-# -------------------------------
+def _wipe_solver_internals(model: cobra.Model):
+    """
+    Wipe internal solver-related attributes so COBRApy will create
+    a clean solver interface when model.solver = ... is called.
+    """
+    attrs = [
+        "_solver",
+        "_cached_problem",
+        "_milp_problem",
+        "_optimization_expression",
+        "_objective_coefficient",
+        "_variable_id_map",
+    ]
+    for a in attrs:
+        if hasattr(model, a):
+            try:
+                setattr(model, a, None)
+            except Exception:
+                # fallback to direct dict assignment if attribute protected
+                try:
+                    model.__dict__[a] = None
+                except Exception:
+                    pass
+
+
+def _available_solvers():
+    """
+    Return a small readable mapping of available solver keys (optlang modules).
+    """
+    try:
+        solvers = getattr(cobra.util.solver, "solvers", None)
+        if isinstance(solvers, dict):
+            return list(solvers.keys())
+    except Exception:
+        pass
+    # fallback: try to detect the presence of common interfaces
+    candidates = ["cplex", "optlang_cplex", "glpk", "glpk_exact", "scipy", "gurobi", "optlang_gurobi"]
+    available = []
+    for s in candidates:
+        try:
+            # a harmless test: try to set solver on a tiny model
+            m = cobra.Model("tmp_avail_check")
+            m.add_metabolites([cobra.Metabolite("m1")])
+            r = cobra.Reaction("r1")
+            r.add_metabolites({m.metabolites[0]: -1})
+            m.add_reactions([r])
+            m.solver = s
+            available.append(s)
+            # cleanup
+            _wipe_solver_internals(m)
+        except Exception:
+            pass
+    return available
+
+
+def _normalize_solver_name(requested: str) -> str:
+    """
+    Normalize common user-provided solver names to names optlang expects.
+    """
+    if requested is None:
+        return None
+    r = requested.lower().strip()
+    mapping = {
+        "cplex": "cplex",            # cobra.util.solver.solvers likely has 'cplex'
+        "optlang_cplex": "cplex",
+        "gurobi": "gurobi",
+        "optlang_gurobi": "gurobi",
+        "glpk": "glpk",
+        "glpk_exact": "glpk_exact",
+        "scipy": "scipy",
+    }
+    return mapping.get(r, r)
+
+
+def reattach_solver_clean(model: cobra.Model, solver: str = "cplex", fallback: bool = True):
+    """
+    Fully wipe solver internals and attach the requested solver.
+    If reattach fails and fallback==True, try other available solvers.
+    """
+    solver = _normalize_solver_name(solver)
+    _log(f"Attempting to reattach solver '{solver}' (will wipe internals first).")
+    _wipe_solver_internals(model)
+
+    available = _available_solvers()
+    _log(f"Detected available solvers: {available}")
+
+    if solver and solver not in available:
+        _log(f"Requested solver '{solver}' not in available list. Will attempt fallback.")
+        solver = None
+
+    tried = []
+    # If a specific solver requested, try that first
+    attempts = ([solver] if solver else []) + [s for s in available if s != solver]
+    for s in attempts:
+        if not s:
+            continue
+        tried.append(s)
+        try:
+            model.solver = s
+            _log(f"Solver '{s}' reattached successfully.")
+            return s
+        except Exception as e:
+            _log(f"Warning: could not attach solver '{s}': {e}")
+
+    raise RuntimeError(f"Failed to attach any solver. Tried: {tried}. Available: {available}.")
+
+
 def load_cobra_model_pickle_large(filename: str, solver: str | None = "cplex") -> cobra.Model:
     """
-    Load a COBRApy model from a solver-stripped pickle file.
-    Fully resets solver internals, then optionally reattaches a solver.
+    Load a COBRApy model from a solver-stripped pickle file, then reattach a fresh solver.
     """
+    filename = str(filename)
     lockfile = filename + ".lock"
     lock = FileLock(lockfile)
     _log(f"Loading pickle {filename} (shared lock)")
@@ -91,21 +209,15 @@ def load_cobra_model_pickle_large(filename: str, solver: str | None = "cplex") -
         with open(filename, "rb") as f:
             model = pickle.load(f)
 
-    _log("Pickle loaded successfully.")
+    _log("Pickle loaded successfully. Wiping internal solver structures and reattaching solver.")
 
-    # --- Critical: wipe any half-present solver ---
-    if hasattr(model, "_solver"):
-        model._solver = None   # fully wipe solver state
-
-    # --- Reattach solver ---
-    if solver:
-        try:
-            model.solver = solver
-            _log(f"Solver '{solver}' reattached successfully.")
-        except Exception as e:
-            _log(f"Warning: could not reattach solver '{solver}': {e}")
-    else:
-        _log("No solver reattached (solver=None).")
+    # wipe internals and try to reattach
+    try:
+        reattach_solver_clean(model, solver=solver, fallback=True)
+    except Exception as e:
+        _log(f"ERROR: could not reattach any solver: {e}")
+        # raise so upstream job notices; you can also return model with no solver
+        raise
 
     return model
 
