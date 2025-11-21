@@ -420,12 +420,12 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
         print(f"Personalized Model for {sample_name} already exists. Skipping.")
         return save_path
     print(f"{datetime.now(tz=timezone.utc)}: Personalized model for {sample_name} does not exist.")
-    print(f"{datetime.now(tz=timezone.utc)}: Loading global model")
-    global_model_path = os.path.join(global_model_dir, "global_model.pickle")
+    print(f"{datetime.now(tz=timezone.utc)}: Loading global model (may take ~7 hours)")
+    global_model_path = os.path.join(global_model_dir, "global_model.sbml")
     global_matr_path = os.path.join(global_model_dir, "global_matr.npz")
     global_vec_path = os.path.join(global_model_dir, "global_vecs.npz")
     print(f"{datetime.now(tz=timezone.utc)}: Loading model")
-    model = load_cobra_model_pickle_large(global_model_path, solver="cplex")
+    model = cobra.io.read_sbml_model(global_model_path)
     # need the list of reaction IDs from the original global model for later, so save them
     print(f"{datetime.now(tz=timezone.utc)}: Extracting rxn IDs from model")
     global_rxn_ids = [r.id for r in model.reactions]
@@ -532,13 +532,13 @@ def build_and_save_global_model(abun_filepath: str, mod_filepath: str, out_filep
     # save global model and ex_mets for later, to allow for restarting from this point
     global_model_dir = os.path.join(out_filepath, "global_model")
     print(f"{datetime.now(tz=timezone.utc)}: Writing global model to: {global_model_dir}")
-    global_model_path = os.path.join(global_model_dir, "global_model.pickle")
+    global_model_path = os.path.join(global_model_dir, "global_model.sbml")
     global_matr_path = os.path.join(global_model_dir, "global_matr.npz")
     global_vec_path = os.path.join(global_model_dir, "global_vecs.npz")
     ensure_parent_dir(global_model_path)
-    print(f"{datetime.now(tz=timezone.utc)}: Pickling...")
-    save_cobra_model_pickle_large(global_model, global_model_path)
-    print(f"{datetime.now(tz=timezone.utc)}: Pickling complete.")
+    print(f"{datetime.now(tz=timezone.utc)}: Writing SBML model...")
+    cobra.io.write_sbml_model(global_model, global_model_path)
+    print(f"{datetime.now(tz=timezone.utc)}: Writing SBML model complete.")
     sparse.save_npz(global_matr_path, global_C)
     np.savez(global_vec_path, global_d=global_d, global_dsense=global_dsense, global_ctrs=global_ctrs)
     print(f"{datetime.now(tz=timezone.utc)}: Global model written.")
