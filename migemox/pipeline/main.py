@@ -31,7 +31,7 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
     Main function to run the MiGEMox pipeline.
 
     Args:
-        abun_filepath: Path to the abundance CSV file.
+        abun_filepath: Path to the abundance CSV file (MUST be normalized before running MiGEMox).
         mod_filepath: Path to the directory containing organism model files (.mat).
         res_filepath: Base directory for saving output models and results.
         contr_filepath: Directory for saving strain contribution analysis results.

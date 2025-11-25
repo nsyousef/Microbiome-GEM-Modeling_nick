@@ -25,16 +25,29 @@ from datetime import datetime, timezone
 import pickle
 from contextlib import contextmanager
 from filelock import FileLock
+import sys
 
-# io_utils.py
-import os
-import pickle
-import time
-from contextlib import contextmanager
-from pathlib import Path
-from filelock import FileLock
-from datetime import datetime, timezone
-import cobra
+def total_size(o, seen=None):
+    """
+    Check total size of a Python dict
+    
+    Args:
+        o: the dict to check size of
+        seen: set of seen object ids to avoid double counting (always leave as default when calling this function)
+    """
+
+    if seen is None:
+        seen = set()
+    oid = id(o)
+    if oid in seen:
+        return 0
+    seen.add(oid)
+    size = sys.getsizeof(o)
+    if isinstance(o, dict):
+        size += sum(total_size(v, seen) for v in o.values())
+    elif isinstance(o, (list, tuple, set)):
+        size += sum(total_size(i, seen) for i in o)
+    return size
 
 def _log(msg: str):
     print(f"{datetime.now(tz=timezone.utc)}: {msg}", flush=True)

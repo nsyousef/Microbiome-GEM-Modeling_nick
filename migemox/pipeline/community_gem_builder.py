@@ -19,7 +19,7 @@ import re
 import sys
 import gc
 from migemox.pipeline.constraints import build_global_coupling_constraints, prune_coupling_constraints_by_microbe
-from migemox.pipeline.io_utils import make_community_gem_dict, print_memory_usage, ensure_parent_dir, save_cobra_model_pickle_large, load_cobra_model_pickle_large
+from migemox.pipeline.io_utils import make_community_gem_dict, print_memory_usage, ensure_parent_dir, total_size
 from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
 from datetime import datetime, timezone
@@ -480,6 +480,7 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
     model_dict = make_community_gem_dict(
         model, C=sample_C, d=sample_d, dsense=sample_dsense, ctrs=sample_ctrs
     )
+    total_size(model_dict)
     savemat(save_path, {'model': model_dict}, do_compression=True, oned_as='column')
     print(f"Sample GEM complete!")
     print_memory_usage()
