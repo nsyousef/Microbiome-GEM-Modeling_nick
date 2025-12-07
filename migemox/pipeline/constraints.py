@@ -8,7 +8,7 @@ defined and integrated into the optimization problems.
 """
 
 # import cobra
-from cobra_structural import StructuralModel
+from cobra_structural import Model as StructuralModel
 import numpy as np
 import pandas as pd
 from scipy.io import loadmat

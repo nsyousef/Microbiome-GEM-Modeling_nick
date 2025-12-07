@@ -11,7 +11,7 @@ import pandas as pd
 import psutil
 import os
 import re
-from cobra_structural import StructuralModel
+from cobra_structural import Model as StructuralModel
 from cobra.io import load_matlab_model
 from cobra.util import create_stoichiometric_matrix
 import numpy as np
