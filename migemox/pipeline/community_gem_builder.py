@@ -8,8 +8,11 @@ the creation of community biomass reactions, and the pruning of models
 based on sample-specific abundances.
 """
 
-import cobra
-from cobra import Reaction, Metabolite
+from cobra_structural import Model as StructuralModel
+from cobra_structural import Reaction as StructuralReaction
+from cobra_structural import Metabolite as StructuralMetabolite
+from cobra_structural.io import load_matlab_model as load_structural_matlab_model
+from cobra_structural.io import to_cobrapy_model
 from scipy.io import savemat
 from scipy import sparse
 import numpy as np
@@ -19,7 +22,7 @@ import re
 import sys
 import gc
 from migemox.pipeline.constraints import build_global_coupling_constraints, prune_coupling_constraints_by_microbe
-from migemox.pipeline.io_utils import make_community_gem_dict, print_memory_usage, ensure_parent_dir, total_size
+from migemox.pipeline.io_utils import make_community_gem_dict, print_memory_usage, ensure_parent_dir, total_size, pickle_structural_model, load_structural_model_pickle
 from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
 from datetime import datetime, timezone
@@ -33,7 +36,7 @@ TRANSPORT_BOUNDS = (0.0, 10000.0) # Unidirectional transport
 # microbe inclusion threshold
 ABUNDANCE_THRESHOLD = 1e-7
 
-def create_rxn(rxn_identifier: str, name: str, subsystem: str, bounds: tuple) -> cobra.Reaction:
+def create_rxn(rxn_identifier: str, name: str, subsystem: str, bounds: tuple) -> StructuralReaction:
     """
     Create a COBRA reaction with specified bounds and metadata.
     
@@ -44,9 +47,9 @@ def create_rxn(rxn_identifier: str, name: str, subsystem: str, bounds: tuple) ->
         bounds: Lower and upper bounds of reaction (mmol/gDW/h)
         
     Returns:
-        Configured COBRA reaction object
+        Configured COBRA structural reaction object
     """
-    rxn = Reaction(rxn_identifier)
+    rxn = StructuralReaction(rxn_identifier)
     rxn.name = name
     rxn.subsystem = subsystem
     lb, ub = bounds
@@ -54,7 +57,7 @@ def create_rxn(rxn_identifier: str, name: str, subsystem: str, bounds: tuple) ->
     rxn.upper_bound = ub
     return rxn
 
-def add_diet_fecal_compartments(model: cobra.Model) -> cobra.Model:
+def add_diet_fecal_compartments(model: StructuralModel) -> StructuralModel:
     """
     Add diet and fecal compartments to community model for host interaction.
     
@@ -78,10 +81,10 @@ def add_diet_fecal_compartments(model: cobra.Model) -> cobra.Model:
         EX_2omxyl[fe]: 2omxyl[fe] <=>
     
     Args:
-        model: Community model with microbe-tagged reactions
+        model: Community model with microbe-tagged reactions (structural)
         
     Returns:
-        Model with diet and fecal compartments and exchange and transport reactions
+        Structural Model with diet and fecal compartments and exchange and transport reactions
     """
     # Delete all EX_ reaction artifacts from the single cell models
     # E.g., EX_dad_2(e): dad_2[e] <=>, EX_thymd(e): thymd[e] <=>
@@ -118,7 +121,7 @@ def add_diet_fecal_compartments(model: cobra.Model) -> cobra.Model:
 
     return model
 
-def _add_exchange_reaction(base_name: str, existing_met_ids: set, model: cobra.Model, bounds: tuple, compartment: str, label: str):
+def _add_exchange_reaction(base_name: str, existing_met_ids: set, model: StructuralModel, bounds: tuple, compartment: str, label: str):
     """
     Helper function to add an exchange reaction and its associated metabolite to the model.
     """
@@ -127,11 +130,11 @@ def _add_exchange_reaction(base_name: str, existing_met_ids: set, model: cobra.M
         reac_id = "EX_" + met_id
         reaction = create_rxn(reac_id, f"{met_id} {label} exchange", ' ', bounds)
         model.add_reactions([reaction])
-        model.add_metabolites([Metabolite(met_id, compartment=compartment)])
+        model.add_metabolites([StructuralMetabolite(met_id, compartment=compartment)])
         reaction = model.reactions.get_by_id(reac_id)
         reaction.add_metabolites({model.metabolites.get_by_id(met_id): -1})
 
-def _add_transport_reaction(rxn_id: str, existing_rxn_ids: set, model: cobra.Model, reactant_id: str, product_id: str, bounds: tuple, label: str):
+def _add_transport_reaction(rxn_id: str, existing_rxn_ids: set, model: StructuralModel, reactant_id: str, product_id: str, bounds: tuple, label: str):
     """
     Helper function to add a transport reaction between two metabolites.
     """
@@ -141,7 +144,7 @@ def _add_transport_reaction(rxn_id: str, existing_rxn_ids: set, model: cobra.Mod
         reaction.reaction = f"{reactant_id} --> {product_id}"
         reaction.bounds = bounds
 
-def com_biomass(model: cobra.Model, abun_path: str, sample_com: str) -> cobra.Model:
+def com_biomass(model: StructuralModel, abun_path: str, sample_com: str) -> StructuralModel:
     """
     Create weighted community biomass reaction based on microbe abundances.
     
@@ -188,7 +191,7 @@ def com_biomass(model: cobra.Model, abun_path: str, sample_com: str) -> cobra.Mo
     community_biomass.add_metabolites(metabolites_to_add=biomass_stoichiometry, combine=True)
 
     # Adding the microbeBiomass metabolite
-    model.add_metabolites([Metabolite("microbeBiomass[u]", formula=" ", \
+    model.add_metabolites([StructuralMetabolite("microbeBiomass[u]", formula=" ", \
                                       name="product of community biomass", compartment="u"),])
     community_biomass.add_metabolites({model.metabolites.get_by_id("microbeBiomass[u]"): 1})
 
@@ -196,7 +199,7 @@ def com_biomass(model: cobra.Model, abun_path: str, sample_com: str) -> cobra.Mo
     reac_name = "EX_microbeBiomass[fe]"
     reaction = create_rxn(reac_name, reac_name, ' ', (-10000., 10000.))
     model.add_reactions([reaction])
-    model.add_metabolites([Metabolite("microbeBiomass[fe]", formula=" ", \
+    model.add_metabolites([StructuralMetabolite("microbeBiomass[fe]", formula=" ", \
                                       name="product of community biomass", compartment="fe"),])
     new_fe_react = model.reactions.get_by_id("EX_microbeBiomass[fe]")
     new_fe_react.add_metabolites({model.metabolites.get_by_id("microbeBiomass[fe]"): -1})
@@ -209,7 +212,7 @@ def com_biomass(model: cobra.Model, abun_path: str, sample_com: str) -> cobra.Mo
 
     return model
 
-def tag_metabolite(met: cobra.Metabolite, microbe_name: str, compartment: str):
+def tag_metabolite(met: StructuralMetabolite, microbe_name: str, compartment: str):
     '''
     Helper function for microbe_to_community for tagging metabolites
     '''
@@ -217,9 +220,9 @@ def tag_metabolite(met: cobra.Metabolite, microbe_name: str, compartment: str):
     no_c_name = met.id.replace(f"[{compartment}]", "")
     met.id = f'{microbe_name}_{no_c_name}[{compartment}]'
 
-def reformat_gem_for_community(model: cobra.Model, microbe_model_name: str):
+def reformat_gem_for_community(model: StructuralModel, microbe_model_name: str):
     """
-    Takes a single cell AGORA GEM and changes its reaction and metabolite formatting so it 
+    Takes a single cell AGORA GEM (structural) and changes its reaction and metabolite formatting so it 
     can be added to a community model in the Com_py pipeline.
   
         Tags everything intracellular and intracellular to extracellular with the microbe name:
@@ -233,7 +236,7 @@ def reformat_gem_for_community(model: cobra.Model, microbe_model_name: str):
             tagged[e] -> general[e]
   
     INPUTS:
-        model: a .mat file of an AGORA single cell model
+        model: a StructuralModel of an AGORA single cell model
         microbe_model_name: the microbe name to be tagged (extracted in the Com_py pipeline)
   
     OUTPUTS:
@@ -272,7 +275,7 @@ def reformat_gem_for_community(model: cobra.Model, microbe_model_name: str):
 
     return model
 
-def _create_inter_microbe_exchange(model: cobra.Model, microbe_name: str) -> cobra.Model:
+def _create_inter_microbe_exchange(model: StructuralModel, microbe_name: str) -> StructuralModel:
     """
     Create IEX reactions for microbe-specific ↔ general metabolite exchange.
     
@@ -289,7 +292,7 @@ def _create_inter_microbe_exchange(model: cobra.Model, microbe_name: str) -> cob
         
         # Create general metabolite if it doesn't exist
         if general_met_id not in [m.id for m in model.metabolites]:
-            general_met = Metabolite(
+            general_met = StructuralMetabolite(
                 general_met_id, 
                 compartment="u", 
                 name=general_met_id.split("[")[0]
@@ -305,7 +308,7 @@ def _create_inter_microbe_exchange(model: cobra.Model, microbe_name: str) -> cob
     
     return model
 
-def _finalize_microbe_tagging(model: cobra.Model, microbe_name: str) -> cobra.Model:
+def _finalize_microbe_tagging(model: StructuralModel, microbe_name: str) -> StructuralModel:
     """Ensure all reactions and metabolites are properly tagged with microbe name."""
     # Tag any remaining untagged reactions
     for rxn in model.reactions:
@@ -320,7 +323,7 @@ def _finalize_microbe_tagging(model: cobra.Model, microbe_name: str) -> cobra.Mo
     
     return model
 
-def prune_zero_abundance_microbe(model: cobra.Model, zero_abundance_microbe: list[str]) -> cobra.Model:
+def prune_zero_abundance_microbe(model: StructuralModel, zero_abundance_microbe: list[str]) -> StructuralModel:
     """
     Remove all reactions and metabolites from microbe below abundance threshold.
     Biological Rationale: microbe below detection limit (typically 0.01% relative
@@ -365,7 +368,7 @@ def build_global_gem(abundance_df: pd.DataFrame, mod_dir: str) -> tuple:
     all_microbe = abundance_df.index.tolist()
     first_path = os.path.join(mod_dir, all_microbe[0] + ".mat")
     print(f"{datetime.now(tz=timezone.utc)}: Added first microbe model: {all_microbe[0]}".center(40, '*'))
-    first_model = cobra.io.load_matlab_model(first_path)
+    first_model = load_structural_matlab_model(first_path)
     # Collect [e] metabolites from first model
     ex_mets = set()
     ex_mets.update([met.id for met in first_model.metabolites if met.id.endswith('[e]')])
@@ -373,7 +376,7 @@ def build_global_gem(abundance_df: pd.DataFrame, mod_dir: str) -> tuple:
     global_model = reformat_gem_for_community(first_model, microbe_model_name=first_path)
     for microbe in all_microbe[1:]:
         microbe_path = os.path.join(mod_dir, microbe + ".mat")
-        model = cobra.io.load_matlab_model(microbe_path)
+        model = load_structural_matlab_model(microbe_path)
         ex_mets.update([met.id for met in model.metabolites if met.id.endswith('[e]')])
         tagged_model = reformat_gem_for_community(model, microbe_path)
         # Avoid duplicate reaction IDs
@@ -425,7 +428,7 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
     global_matr_path = os.path.join(global_model_dir, "global_matr.npz")
     global_vec_path = os.path.join(global_model_dir, "global_vecs.npz")
     print(f"{datetime.now(tz=timezone.utc)}: Loading model")
-    model = cobra.io.read_sbml_model(global_model_path)
+    model = load_structural_model_pickle(global_model_path)
     # need the list of reaction IDs from the original global model for later, so save them
     print(f"{datetime.now(tz=timezone.utc)}: Extracting rxn IDs from model")
     global_rxn_ids = [r.id for r in model.reactions]
@@ -470,6 +473,10 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
     print(f"{datetime.now(tz=timezone.utc)}: Ensuring reversibility fits all compartments")
     for reac in [r for r in model.reactions if "DUt" in r.id or "UFEt" in r.id]:
         reac.lower_bound = 0.
+
+    # convert to standard COBRApy model for saving
+    print(f"{datetime.now(tz=timezone.utc)}: Converting to standard COBRApy model for saving")
+    model = to_cobrapy_model(model)
 
     # Setting EX_microbeBiomass[fe] as objective to match MATLAB mgPipe
     model.objective = "EX_microbeBiomass[fe]"
@@ -533,13 +540,13 @@ def build_and_save_global_model(abun_filepath: str, mod_filepath: str, out_filep
     # save global model and ex_mets for later, to allow for restarting from this point
     global_model_dir = os.path.join(out_filepath, "global_model")
     print(f"{datetime.now(tz=timezone.utc)}: Writing global model to: {global_model_dir}")
-    global_model_path = os.path.join(global_model_dir, "global_model.sbml")
+    global_model_path = os.path.join(global_model_dir, "global_model.pkl")
     global_matr_path = os.path.join(global_model_dir, "global_matr.npz")
     global_vec_path = os.path.join(global_model_dir, "global_vecs.npz")
     ensure_parent_dir(global_model_path)
-    print(f"{datetime.now(tz=timezone.utc)}: Writing SBML model...")
-    cobra.io.write_sbml_model(global_model, global_model_path)
-    print(f"{datetime.now(tz=timezone.utc)}: Writing SBML model complete.")
+    print(f"{datetime.now(tz=timezone.utc)}: Writing pickle model...")
+    pickle_structural_model(global_model, global_model_path)
+    print(f"{datetime.now(tz=timezone.utc)}: Writing pickle model complete.")
     sparse.save_npz(global_matr_path, global_C)
     np.savez(global_vec_path, global_d=global_d, global_dsense=global_dsense, global_ctrs=global_ctrs)
     print(f"{datetime.now(tz=timezone.utc)}: Global model written.")

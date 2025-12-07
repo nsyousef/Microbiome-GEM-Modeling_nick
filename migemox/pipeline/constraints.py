@@ -7,7 +7,8 @@ to cobra models. It ensures that complex constraints are consistently
 defined and integrated into the optimization problems.
 """
 
-import cobra
+# import cobra
+from cobra_structural import StructuralModel
 import numpy as np
 import pandas as pd
 from scipy.io import loadmat
@@ -21,7 +22,7 @@ from datetime import datetime, timezone
 COUPLING_FACTOR = 400
 
 
-def build_global_coupling_constraints(model: cobra.Model, microbe_list: list[str], coupling_factor: float=400):
+def build_global_coupling_constraints(model: StructuralModel, microbe_list: list[str], coupling_factor: float=400):
     """
     Build sparse coupling constraint matrix for microbe biomass relationships.
     
@@ -111,7 +112,7 @@ def prune_coupling_constraints_by_microbe(
     global_dsense: np.ndarray,
     global_ctrs: list,
     present_microbe: list[str],
-    sample_model: cobra.Model
+    sample_model: StructuralModel
 ) -> tuple:
     """
     Prunes the global coupling constraints (C, d, dsense, ctrs) to match the
@@ -124,7 +125,7 @@ def prune_coupling_constraints_by_microbe(
         global_dsense (np.ndarray): The global 'dsense' vector.
         global_ctrs (list): The global constraint names.
         present_microbe (list[str]): List of microbe present in the sample.
-        sample_model (cobra.Model): The sample-specific model after pruning microbe.
+        sample_model (cobra_structural.Model): The sample-specific model after pruning microbe.
 
     Returns:
         tuple: A tuple containing the pruned:

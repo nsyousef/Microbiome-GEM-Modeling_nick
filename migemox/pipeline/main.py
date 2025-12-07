@@ -12,8 +12,6 @@ import os
 import shutil
 import argparse
 from pathlib import Path
-import docplex
-import cplex
 # Import functions from our new modules
 from migemox.pipeline.community_gem_builder import community_gem_builder
 from migemox.pipeline.community_fva_simulations import run_community_fva
