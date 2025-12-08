@@ -424,7 +424,7 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
         return save_path
     print(f"{datetime.now(tz=timezone.utc)}: Personalized model for {sample_name} does not exist.")
     print(f"{datetime.now(tz=timezone.utc)}: Loading global model (may take ~7 hours)")
-    global_model_path = os.path.join(global_model_dir, "global_model.sbml")
+    global_model_path = os.path.join(global_model_dir, "global_model.pkl")
     global_matr_path = os.path.join(global_model_dir, "global_matr.npz")
     global_vec_path = os.path.join(global_model_dir, "global_vecs.npz")
     print(f"{datetime.now(tz=timezone.utc)}: Loading model")
