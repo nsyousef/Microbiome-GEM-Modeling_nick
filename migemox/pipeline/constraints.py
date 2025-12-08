@@ -7,7 +7,7 @@ to cobra models. It ensures that complex constraints are consistently
 defined and integrated into the optimization problems.
 """
 
-# import cobra
+import cobra
 from cobra_structural import Model as StructuralModel
 import numpy as np
 import pandas as pd
