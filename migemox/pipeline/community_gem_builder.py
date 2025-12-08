@@ -477,6 +477,7 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
     # convert to standard COBRApy model for saving
     print(f"{datetime.now(tz=timezone.utc)}: Converting to standard COBRApy model for saving")
     model = to_cobrapy_model(model)
+    print(f"{datetime.now(tz=timezone.utc)}: Conversion complete!")
 
     # Setting EX_microbeBiomass[fe] as objective to match MATLAB mgPipe
     model.objective = "EX_microbeBiomass[fe]"
