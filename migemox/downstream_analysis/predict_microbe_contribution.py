@@ -130,6 +130,10 @@ def _process_single_model(model_file: Path, diet_mod_dir: str, mets_list: Option
                     rxns.extend(iex_rxn_ids)
                     ex_rxn.lower_bound = orig_lb
         else:
+            print("mets list:")
+            print(mets_list)
+            print("model reactions:")
+            print(", ".join([rxn.id for rxn in model.reactions]))
             rxns_in_model = _get_exchange_reactions(model, mets_list)
             if not rxns_in_model:
                 logger.warning(f"No exchange reactions found in model {model_name}")
