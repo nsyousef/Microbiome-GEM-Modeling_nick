@@ -7,6 +7,7 @@ memory usage tracking. It centralizes file operations and utility functions
 to improve code organization and reusability.
 """
 
+from datetime import timezone
 import pandas as pd
 import psutil
 import os
@@ -14,6 +15,9 @@ import re
 from cobra_structural import Model as StructuralModel
 from cobra.io import load_matlab_model
 from cobra.util import create_stoichiometric_matrix
+from cobra.io import read_sbml_model, write_sbml_model
+from cobra_structural.io import read_sbml_model as read_structural_sbml_model
+from cobra_structural.io import write_sbml_model as write_structural_sbml_model
 import numpy as np
 from typing import Dict, List, Tuple, Optional
 from pathlib import Path
@@ -21,8 +25,20 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 from scipy.sparse import csr_matrix
+from scipy.sparse import save_npz, load_npz
 import pickle
 import sys
+from datetime import datetime
+
+def log_with_timestamp(message: str):
+    """
+    Logs a message with the current UTC timestamp.
+
+    Args:
+        message: The message to log.
+    """
+    current_time = datetime.now(tz=timezone.utc)
+    print(f"[{current_time}] {message}")
 
 def pickle_structural_model(model: StructuralModel, file_path: str):
     """
@@ -32,8 +48,10 @@ def pickle_structural_model(model: StructuralModel, file_path: str):
         model: The cobra StructuralModel to pickle.
         file_path: The path to the file where the model should be pickled.
     """
+    log_with_timestamp(f"Pickling StructuralModel to {file_path}...")
     with open(file_path, 'wb') as f:
         pickle.dump(model, f)
+    log_with_timestamp(f"Pickling complete.")
 
 def load_structural_model_pickle(file_path: str) -> StructuralModel:
     """
@@ -44,9 +62,110 @@ def load_structural_model_pickle(file_path: str) -> StructuralModel:
     Returns:
         The loaded cobra StructuralModel.
     """
+    log_with_timestamp(f"Loading StructuralModel from pickle {file_path}...")
     with open(file_path, 'rb') as f:
         model = pickle.load(f)
+    log_with_timestamp(f"Loading complete.")
     return model
+
+def save_model_and_constraints(model, C, d, dsense, ctrs, model_name, out_dir, save_format="sbml"):
+    """
+    Save a cobra model and its associated coupling constraints to disk.
+
+    This function works on both cobra.Model and cobra.StructuralModel objects.
+
+    You can specify the save format for the model to be SBML or pickle. Pickle only works on StructuralModel objects.
+    
+    :param model: A cobra Model or StructuralModel object
+    :param C: Coupling matrix
+    :param d: Right-hand side of coupling constraints
+    :param dsense: Sense of coupling constraints
+    :param ctrs: Names of coupling constraints
+    :param model_name: Name of the model
+    :param out_dir: Directory to save the model and constraints
+    :param save_format: "sbml" or "pickle"
+    """
+
+    base = os.path.join(out_dir, model_name)
+
+    # save GEM
+    if save_format == "pickle":
+        if not isinstance(model, StructuralModel):
+            raise ValueError("Pickle format only supported for StructuralModel objects.")
+        # 1) GEM → pickle
+        pickle_path = base + ".pkl"
+        pickle_structural_model(model, pickle_path)
+
+    elif save_format == "sbml":
+        # 1) GEM → SBML
+        sbml_path = base + ".sbml"
+        if isinstance(model, StructuralModel):
+            log_with_timestamp(f"Writing StructuralModel to SBML at {sbml_path}...")
+            write_structural_sbml_model(model, sbml_path)
+            log_with_timestamp(f"Writing complete.")
+        else:
+            log_with_timestamp(f"Writing Model to SBML at {sbml_path}...")
+            write_sbml_model(model, sbml_path)
+            log_with_timestamp(f"Writing complete.")
+
+    # Save constraints
+    log_with_timestamp(f"Saving coupling constraints to {base}_C.npz and {base}_constraints.npz...")
+    C = csr_matrix(C)
+    save_npz(base + "_C.npz", C)
+
+    np.savez(
+        base + "_constraints.npz",
+        d=d,
+        dsense=dsense,
+        ctrs=ctrs,
+    )
+    log_with_timestamp(f"Saving constraints complete.")
+
+def load_model_and_constraints(model_name, model_dir, model_type="standard",  save_format="sbml"):
+    """
+    Load a COBRA model and its associated coupling constraints from disk.
+
+    This function works on both cobra.Model and cobra.StructuralModel objects. The type of model to load is specified by the `model_type` parameter.
+    
+    :param model_name: The name of the model to load
+    :param model_dir: The directory where the model and constraints are stored
+    :param model_type: "standard" for cobra.Model, "structural" for cobra.StructuralModel
+    :param save_format: "sbml" or "pickle"
+    :return: A tuple of (model, C, d, dsense, ctrs)
+    """
+    base = os.path.join(model_dir, model_name)
+
+    if save_format == "pickle":
+        if model_type != "structural":
+            raise ValueError("Pickle format only supported for StructuralModel objects.")
+        # Load GEM from pickle
+        model = load_structural_model_pickle(base + ".pkl")
+
+
+    elif save_format == "sbml":
+        if model_type == "standard":
+            # Load GEM from SBML
+            log_with_timestamp(f"Loading Model from SBML at {base + '.sbml'}...")
+            model = read_sbml_model(base + ".sbml")
+            log_with_timestamp(f"Loading complete.")
+        elif model_type == "structural":
+            # Load StructuralModel from SBML
+            log_with_timestamp(f"Loading StructuralModel from SBML at {base + '.sbml'}...")
+            model = read_structural_sbml_model(base + ".sbml")
+            log_with_timestamp(f"Loading complete.")
+        else:
+            raise ValueError(f"Unknown model_type: {model_type}")
+
+    # Load constraints
+    log_with_timestamp(f"Loading coupling constraints from {base + '_C.npz'} and {base + '_constraints.npz'}...")
+    C = load_npz(base + "_C.npz")
+    data = np.load(base + "_constraints.npz", allow_pickle=True)
+    log_with_timestamp(f"Loading constraints complete.")
+    d = data["d"]
+    dsense = data["dsense"]
+    ctrs = data["ctrs"]
+
+    return model, C, d, dsense, ctrs
 
 def total_size(o, seen=None):
     """

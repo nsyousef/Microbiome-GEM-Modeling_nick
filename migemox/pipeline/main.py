@@ -46,10 +46,10 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
         shutil.rmtree(res_filepath)
         print("Output directory cleared for fresh start.")
 
-    clean_samp_names, organisms, ex_mets = community_gem_builder(
+    clean_samp_names, organisms, ex_mets, global_rxn_ids = community_gem_builder(
         abun_filepath=abun_filepath,
         mod_filepath=mod_filepath,
-        out_filepath=f'{res_filepath}/Personalized_Models',
+        out_dir=f'{res_filepath}/Personalized_Models',
         workers=workers
     )
     

@@ -12,6 +12,7 @@ from migemox.pipeline.constraints import apply_couple_constraints
 from glob import glob
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
+from migemox.pipeline.io_utils import load_model_and_constraints
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ def _get_exchange_reactions(model: object, mets_list: Optional[List[str]] = None
         # Only reactions matching provided metabolites
         return [rxn for rxn in all_iex if any(f"IEX_{m}[u]tr" in rxn for m in mets_list)]
 
-def _perform_fva(model: object, model_path: str, rxns_in_model: List[str], solver: str) -> Tuple[Dict[str, float], Dict[str, float]]:
+def _perform_fva(model: object, rxns_in_model: List[str], solver: str) -> Tuple[Dict[str, float], Dict[str, float]]:
     """Perform flux variability analysis with fallbacks"""
     try:
         fva_result = flux_variability_analysis(
@@ -95,12 +96,19 @@ def _process_single_model(model_file: Path, diet_mod_dir: str, mets_list: Option
     Returns:
         Dict with model results or None if failed
     """
-    model_path = os.path.join(diet_mod_dir, model_file)
     model_name = model_file.stem
     try:
-        model = _load_model_safely(model_path)
+        model, C, d, dsense, ctrs = load_model_and_constraints(
+            model_name, diet_mod_dir, model_type="standard", save_format="sbml")
+        
+        model_data = {
+            'C': C,
+            'd': d,
+            'dsense': dsense,
+            'ctrs': ctrs
+        }
         model.solver = solver
-        model = apply_couple_constraints(model, model_path)
+        model = apply_couple_constraints(model, model_data)
         if model is None: return None
             
         min_fluxes, max_fluxes, rxns = {}, {}, []
@@ -116,7 +124,7 @@ def _process_single_model(model_file: Path, diet_mod_dir: str, mets_list: Option
                     orig_lb = ex_rxn.lower_bound
                     ex_rxn.lower_bound = model_fluxes[model_name.split('_')[-1]]
                     # Perform FVA on only IEX rxns associated with current metabolite
-                    minf, maxf = _perform_fva(model, model_path, iex_rxn_ids, solver)
+                    minf, maxf = _perform_fva(model, iex_rxn_ids, solver)
                     min_fluxes.update(minf)
                     max_fluxes.update(maxf)
                     rxns.extend(iex_rxn_ids)
@@ -126,7 +134,7 @@ def _process_single_model(model_file: Path, diet_mod_dir: str, mets_list: Option
             if not rxns_in_model:
                 logger.warning(f"No exchange reactions found in model {model_name}")
                 return None
-            min_fluxes, max_fluxes = _perform_fva(model, model_path, rxns_in_model, solver)
+            min_fluxes, max_fluxes = _perform_fva(model, rxns_in_model, solver)
             rxns = rxns_in_model
         
         return {

@@ -13,8 +13,7 @@ from cobra_structural import Reaction as StructuralReaction
 from cobra_structural import Metabolite as StructuralMetabolite
 from cobra_structural.io import load_matlab_model as load_structural_matlab_model
 from cobra_structural.io import to_cobrapy_model
-from scipy.io import savemat
-from scipy import sparse
+
 import numpy as np
 import pandas as pd
 import os
@@ -22,7 +21,7 @@ import re
 import sys
 import gc
 from migemox.pipeline.constraints import build_global_coupling_constraints, prune_coupling_constraints_by_microbe
-from migemox.pipeline.io_utils import make_community_gem_dict, print_memory_usage, ensure_parent_dir, total_size, pickle_structural_model, load_structural_model_pickle
+from migemox.pipeline.io_utils import print_memory_usage, save_model_and_constraints, load_model_and_constraints
 from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
 from datetime import datetime, timezone
@@ -35,6 +34,8 @@ TRANSPORT_BOUNDS = (0.0, 10000.0) # Unidirectional transport
 
 # microbe inclusion threshold
 ABUNDANCE_THRESHOLD = 1e-7
+
+GLOBAL_MODEL_NAME = "global_model"
 
 def create_rxn(rxn_identifier: str, name: str, subsystem: str, bounds: tuple) -> StructuralReaction:
     """
@@ -403,41 +404,30 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
         - prunes zero-abundance microbe
         - adds diet constraints
         - adds community biomass
-        - saves as .mat
+        - saves as .sbml
 
     Parameters:
         sample_name: column name in abundance_df
-        global_model_path: path to the unpruned community model
+        global_model_dir: path to the unpruned community model directory
         abundance_df: pandas dataframe of abundances
         abun_path: path to abundance CSV (needed by com_biomass)
         out_dir: directory to save the output model
-
-    Returns:
-        Path to the saved model
     """
 
     print(f"{datetime.now(tz=timezone.utc)}: Building sample GEM for {sample_name}")
     print_memory_usage()
-    save_path = os.path.join(out_dir, f"microbiota_model_samp_{sample_name}.mat")
+    save_path = os.path.join(out_dir, f"microbiota_model_samp_{sample_name}.sbml")
     if os.path.exists(save_path):
         print(f"Personalized Model for {sample_name} already exists. Skipping.")
-        return save_path
     print(f"{datetime.now(tz=timezone.utc)}: Personalized model for {sample_name} does not exist.")
-    print(f"{datetime.now(tz=timezone.utc)}: Loading global model (may take ~7 hours)")
-    global_model_path = os.path.join(global_model_dir, "global_model.pkl")
-    global_matr_path = os.path.join(global_model_dir, "global_matr.npz")
-    global_vec_path = os.path.join(global_model_dir, "global_vecs.npz")
-    print(f"{datetime.now(tz=timezone.utc)}: Loading model")
-    model = load_structural_model_pickle(global_model_path)
+    print(f"{datetime.now(tz=timezone.utc)}: Loading global model from {global_model_dir}")
+    model, global_C, global_d, global_dsense, global_ctrs = load_model_and_constraints(
+        GLOBAL_MODEL_NAME, global_model_dir, model_type="structural", save_format="pickle")
+
     # need the list of reaction IDs from the original global model for later, so save them
     print(f"{datetime.now(tz=timezone.utc)}: Extracting rxn IDs from model")
     global_rxn_ids = [r.id for r in model.reactions]
-    print(f"{datetime.now(tz=timezone.utc)}: Loading other matrices")
-    global_C = sparse.load_npz(global_matr_path)
-    data = np.load(global_vec_path, allow_pickle=True)
-    global_d = data['global_d']
-    global_dsense = data['global_dsense']
-    global_ctrs = data['global_ctrs']
+
     print(f"{datetime.now(tz=timezone.utc)}: Global model loaded succssfully")
     print(f"Memory usage after loading global model:")
     print_memory_usage()
@@ -485,14 +475,12 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
     print(f"{datetime.now(tz=timezone.utc)}: Saving sample GEM to file")
     print_memory_usage()
     os.makedirs(out_dir, exist_ok=True)
-    model_dict = make_community_gem_dict(
-        model, C=sample_C, d=sample_d, dsense=sample_dsense, ctrs=sample_ctrs
-    )
-    total_size(model_dict)
-    savemat(save_path, {'model': model_dict}, do_compression=True, oned_as='column')
+
+    save_model_and_constraints(model, sample_C, sample_d, sample_dsense, sample_ctrs,
+                               model_name=f"microbiota_model_samp_{sample_name}", out_dir=out_dir, save_format="sbml")
+
     print(f"Sample GEM complete!")
     print_memory_usage()
-    return save_path
 
 def build_and_save_global_model(abun_filepath: str, mod_filepath: str, out_filepath: str, workers=1) -> tuple:
     """
@@ -510,6 +498,7 @@ def build_and_save_global_model(abun_filepath: str, mod_filepath: str, out_filep
         sample_info: the abundance file as a DataFrame
         clean_samp_names: cleaned up sample names
         ex_mets: list of extracellular metabolites found in the model
+        global_rxn_ids: list of reaction IDs in the global model (for sanity checking they are in same order later)
     """
     print(f"{datetime.now(tz=timezone.utc)}: Reading abundance file".center(40, '*'))
 
@@ -538,41 +527,45 @@ def build_and_save_global_model(abun_filepath: str, mod_filepath: str, out_filep
     print(f"global_ctrs: {global_ctrs.shape}")
     print(f"ex_mets: {len(ex_mets)}")
 
+    # get list of reactions as a sanity check
+    global_rxn_ids = [r.id for r in global_model.reactions]
+
     # save global model and ex_mets for later, to allow for restarting from this point
-    global_model_dir = os.path.join(out_filepath, "global_model")
+    global_model_dir = os.path.join(out_filepath, GLOBAL_MODEL_NAME)
     print(f"{datetime.now(tz=timezone.utc)}: Writing global model to: {global_model_dir}")
-    global_model_path = os.path.join(global_model_dir, "global_model.pkl")
-    global_matr_path = os.path.join(global_model_dir, "global_matr.npz")
-    global_vec_path = os.path.join(global_model_dir, "global_vecs.npz")
-    ensure_parent_dir(global_model_path)
-    print(f"{datetime.now(tz=timezone.utc)}: Writing pickle model...")
-    pickle_structural_model(global_model, global_model_path)
-    print(f"{datetime.now(tz=timezone.utc)}: Writing pickle model complete.")
-    sparse.save_npz(global_matr_path, global_C)
-    np.savez(global_vec_path, global_d=global_d, global_dsense=global_dsense, global_ctrs=global_ctrs)
-    print(f"{datetime.now(tz=timezone.utc)}: Global model written.")
+
+    os.makedirs(global_model_dir, exist_ok=True)
+
+    save_model_and_constraints(
+        global_model, 
+        global_C, 
+        global_d, 
+        global_dsense, 
+        global_ctrs, 
+        model_name=GLOBAL_MODEL_NAME, 
+        out_dir=global_model_dir, 
+        save_format="pickle"
+    )
     
     print(f"{datetime.now(tz=timezone.utc)}: Memory usage before deleting global model")
     print_memory_usage()
 
-    return samples, global_model_dir, sample_info, clean_samp_names, ex_mets
+    return samples, global_model_dir, sample_info, clean_samp_names, ex_mets, global_rxn_ids
 
-def community_gem_builder(abun_filepath: str, mod_filepath: str, out_filepath: str, workers=1) -> tuple:
+def community_gem_builder(abun_filepath: str, mod_filepath: str, out_dir: str, workers=1) -> tuple:
     """
     Inspired by mgpipe.m code.
     Main pipeline which inputs the GEMs data and accesses the different functions.
 
     INPUTS:
-        abun_path: path to the microbe abundance .csv file
+        abun_filepath: path to the microbe abundance .csv file
             Formatting for the microbe abundance:
                 The columns should have the names of the .mat files of the microbe you want to load
                 See file normCoverage_smaller.csv for template example   
-        modpath: path to folder with all AGORA models 
+        mod_filepath: path to folder with all AGORA models 
             E.g. "~/data_input/AGORA103/"
-        respath: path where the community models will be output (defaults to same folder as )
+        out_dir: path to the folder where the community models will be output (defaults to same folder as )
             E.g. "~/results/"
-        dietpath: path to the AGORA compatible diet (for community model) .csv file
-            E.g. "~/data_input/AverageEU_diet_fluxes.csv"
   
     OUTPUTS:
         All sample community models to a specified local folder
@@ -583,10 +576,10 @@ def community_gem_builder(abun_filepath: str, mod_filepath: str, out_filepath: s
     """
 
     print(f"{datetime.now(tz=timezone.utc)}: Starting MiGeMox pipeline".center(40, '*'))
-    samples, global_model_dir, sample_info, clean_samp_names, ex_mets = build_and_save_global_model(
+    samples, global_model_dir, sample_info, clean_samp_names, ex_mets, global_rxn_ids = build_and_save_global_model(
         abun_filepath, 
         mod_filepath, 
-        out_filepath, 
+        out_dir, 
         workers
     )
     print(f"{datetime.now(tz=timezone.utc)}: Garbage collecting...")
@@ -599,7 +592,7 @@ def community_gem_builder(abun_filepath: str, mod_filepath: str, out_filepath: s
 
     # build sample GEMs sequentially:
     for s in samples:
-        build_sample_gem(s, global_model_dir, sample_info, abun_filepath, out_filepath)
+        build_sample_gem(s, global_model_dir, sample_info, abun_filepath, out_dir)
 
     # build sample GEMs in parallel
     # with ProcessPoolExecutor(max_workers=workers) as executor:
@@ -608,4 +601,4 @@ def community_gem_builder(abun_filepath: str, mod_filepath: str, out_filepath: s
     #     for f in tqdm(futures, desc='Building sample GEMs'):
     #         f.result()
     print(f"{datetime.now(tz=timezone.utc)}: Finished building Sample GEMs") 
-    return clean_samp_names, sample_info.index.tolist(), ex_mets
+    return clean_samp_names, sample_info.index.tolist(), ex_mets, global_rxn_ids

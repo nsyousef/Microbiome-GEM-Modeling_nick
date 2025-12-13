@@ -181,7 +181,7 @@ def prune_coupling_constraints_by_microbe(
     
     return pruned_C, pruned_d, pruned_dsense, pruned_ctrs
 
-def apply_couple_constraints(model: cobra.Model, model_path: str) -> cobra.Model:
+def apply_couple_constraints(model: cobra.Model, model_data: dict) -> cobra.Model:
     """
     Applies biomass coupling constraints to a cobra model using optlang.
 
@@ -191,21 +191,21 @@ def apply_couple_constraints(model: cobra.Model, model_path: str) -> cobra.Model
 
     Args:
         model (cobra.Model): The cobra model to which constraints will be added.
-        model_path (str): Path to the .mat file containing the coupling data.
+        model_data: Dictionary containing the coupling data (C, d, dsense, ctrs)
 
     Returns:
         cobra.Model: The model with added coupling constraints.
     """
 
-    data = loadmat(model_path, simplify_cells=True)
-    modelscipy = data["model"]
-
-    S = csr_matrix(modelscipy['S'])     # stoichiometric matrix
-    C = csr_matrix(modelscipy.get('C', np.empty((0, S.shape[1]))))  # fallback to empty
-    d = modelscipy['d'].reshape(-1, 1).astype(float)
+    # S = csr_matrix(modelscipy['S'])     # stoichiometric matrix
+    # C = csr_matrix(modelscipy.get('C', np.empty((0, S.shape[1]))))  # fallback to empty
+    C = csr_matrix(model_data['C'])  # NOTE: used to fallback to matrix of zeros of dimension of stoich matrix if empty, but now does not
+    # d = modelscipy['d'].reshape(-1, 1).astype(float)
+    d = model_data['d'].reshape(-1, 1).astype(float)
 
     C_csr = C.tocsr()
-    dsense = modelscipy.get('dsense')
+    # dsense = modelscipy.get('dsense')
+    dsense = model_data['dsense']
     
     forward_vars = np.array([rxn.forward_variable for rxn in model.reactions])
     reverse_vars = np.array([rxn.reverse_variable for rxn in model.reactions])
