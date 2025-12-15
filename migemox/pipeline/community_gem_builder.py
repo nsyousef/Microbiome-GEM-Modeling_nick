@@ -591,14 +591,14 @@ def community_gem_builder(abun_filepath: str, mod_filepath: str, out_dir: str, w
     print(f"{datetime.now(tz=timezone.utc)}: Building sample GEMs")
 
     # build sample GEMs sequentially:
-    for s in samples:
-        build_sample_gem(s, global_model_dir, sample_info, abun_filepath, out_dir)
+    # for s in samples:
+    #     build_sample_gem(s, global_model_dir, sample_info, abun_filepath, out_dir)
 
     # build sample GEMs in parallel
-    # with ProcessPoolExecutor(max_workers=workers) as executor:
-    #     futures = [executor.submit(build_sample_gem, s, global_model_dir, sample_info, abun_filepath, out_filepath)
-    #                for s in samples]
-    #     for f in tqdm(futures, desc='Building sample GEMs'):
-    #         f.result()
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(build_sample_gem, s, global_model_dir, sample_info, abun_filepath, out_dir)
+                   for s in samples]
+        for f in tqdm(futures, desc='Building sample GEMs'):
+            f.result()
     print(f"{datetime.now(tz=timezone.utc)}: Finished building Sample GEMs") 
     return clean_samp_names, sample_info.index.tolist(), ex_mets, global_rxn_ids
