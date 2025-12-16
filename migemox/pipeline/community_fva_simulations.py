@@ -189,7 +189,8 @@ def _perform_fva(model: cobra.Model, exchanges: list, sample_name: str, model_da
 
     model = apply_couple_constraints(model, model_data)
     fecal_result = flux_variability_analysis(model, 
-                                            reaction_list=[rxn for rxn in model.exchanges],
+                                            # reaction_list=[rxn for rxn in model.exchanges],
+                                            reaction_list=[rxn for rxn in model.reactions if rxn.id.startswith('EX_')],
                                             fraction_of_optimum=0.9999, processes=4)
     diet_result = flux_variability_analysis(model, 
                                             reaction_list=[rxn for rxn in model.reactions if 'Diet_EX_' in rxn.id],
@@ -202,7 +203,8 @@ def _perform_fva(model: cobra.Model, exchanges: list, sample_name: str, model_da
     net_production_samp, net_uptake_samp, min_net_fecal_excretion, raw_fva_results = {}, {}, {}, {}
 
     # exchanges derived from exMets (all exchanged metabolites across all individual models) -> intersect it with rxns in this particular model
-    fecal_rxns = [r.id for r in model.exchanges]
+    # fecal_rxns = [r.id for r in model.exchanges]
+    fecal_rxns = [rxn for rxn in model.reactions if rxn.id.startswith('EX_')]
     exchanges = set(fecal_rxns).intersection(set(exchanges))
 
     # cut off very small values below solver sensitivity
