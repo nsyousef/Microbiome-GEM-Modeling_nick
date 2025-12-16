@@ -14,7 +14,7 @@ from pathlib import Path
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
-from migemox.pipeline.io_utils import load_model_and_constraints, save_model_and_constraints
+from migemox.pipeline.io_utils import load_model_and_constraints, save_model_and_constraints, log_with_timestamp
 from migemox.pipeline.diet_adapter import adapt_vmh_diet_to_agora
 from migemox.pipeline.constraints import apply_couple_constraints
 
@@ -188,16 +188,40 @@ def _perform_fva(model: cobra.Model, exchanges: list, sample_name: str, model_da
     # min_flux_diet, max_flux_diet = run_sequential_fva(opt_model, vars, obj_expr, diet_rxn_ids, opt_percentage=99.99)
 
     model = apply_couple_constraints(model, model_data)
+    fecal_rxn_list = [rxn for rxn in model.reactions if rxn.id.startswith('EX_')]
+    log_with_timestamp("fecal_rxn_list")
+    print(fecal_rxn_list)
     fecal_result = flux_variability_analysis(model, 
                                             # reaction_list=[rxn for rxn in model.exchanges],
-                                            reaction_list=[rxn for rxn in model.reactions if rxn.id.startswith('EX_')],
+                                            reaction_list=fecal_rxn_list,
                                             fraction_of_optimum=0.9999, processes=4)
+    diet_rxn_list = [rxn for rxn in model.reactions if 'Diet_EX_' in rxn.id]
+    log_with_timestamp(diet_rxn_list)
+    print(diet_rxn_list)
     diet_result = flux_variability_analysis(model, 
                                             reaction_list=[rxn for rxn in model.reactions if 'Diet_EX_' in rxn.id],
                                             fraction_of_optimum=0.9999, processes=4)
     
+    print("fecal_result")
+    print(fecal_result)
+
+    print("diet_result")
+    print(diet_result)
+    
     min_flux_fecal, max_flux_fecal = fecal_result['minimum'].to_dict(), fecal_result['maximum'].to_dict()
     min_flux_diet, max_flux_diet = diet_result['minimum'].to_dict(), diet_result['maximum'].to_dict()
+
+    log_with_timestamp("min_flux_fecal:")
+    print(min_flux_fecal)
+
+    log_with_timestamp("max_flux_fecal:")
+    print(max_flux_fecal)
+
+    log_with_timestamp("min_flu_diet:")
+    print(min_flux_diet)
+
+    log_with_timestamp("max_flux_diet")
+    print(max_flux_diet)
 
     # Calculate net production and uptake
     net_production_samp, net_uptake_samp, min_net_fecal_excretion, raw_fva_results = {}, {}, {}, {}
@@ -207,13 +231,19 @@ def _perform_fva(model: cobra.Model, exchanges: list, sample_name: str, model_da
     fecal_rxns = [rxn for rxn in model.reactions if rxn.id.startswith('EX_')]
     exchanges = set(fecal_rxns).intersection(set(exchanges))
 
+    log_with_timestamp("fecal_rxns")
+    print(fecal_rxns)
+    log_with_timestamp("exchanges")
+    print(exchanges)
+
     # cut off very small values below solver sensitivity
     tol = 1e-07
     for rxn in exchanges:
         fecal_var = rxn
         diet_var = rxn.replace('EX_', 'Diet_EX_').replace('[fe]', '[d]')
 
-        if abs(max_flux_fecal.get(fecal_var, 0)) < tol: max_flux_fecal.get(fecal_var, 0) == 0
+        if abs(max_flux_fecal.get(fecal_var, 0)) < tol:
+            max_flux_fecal.get(fecal_var, 0) = 0 # was == before
 
         prod = abs(min_flux_diet.get(diet_var, 0) + max_flux_fecal.get(fecal_var, 0))
         uptk = abs(max_flux_diet.get(diet_var, 0) + min_flux_fecal.get(fecal_var, 0))
