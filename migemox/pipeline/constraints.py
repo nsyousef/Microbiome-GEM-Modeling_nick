@@ -15,7 +15,7 @@ from scipy.io import loadmat
 from scipy.sparse import csr_matrix, vstack, hstack
 from optlang import Constraint, Variable, Objective, Model as OptModel
 from tqdm import tqdm
-from migemox.pipeline.io_utils import print_memory_usage
+from migemox.pipeline.io_utils import print_memory_usage, log_with_timestamp
 from datetime import datetime, timezone
 
 # Default Coupling Factor (Used in https://doi.org/10.4161/gmic.22370)
@@ -155,14 +155,23 @@ def prune_coupling_constraints_by_microbe(
                     keep_rows.append(i)
                     break
     
+    log_with_timestamp(f"Length of keep_rows: {len(keep_rows)}")
+
     if keep_rows:
           # Remap columns to match sample-specific model
         sample_rxn_ids = [r.id for r in sample_model.reactions]
 
+        log_with_timestamp(f"length of sample_rxn_ids: {len(sample_rxn_ids)}")
+
         global_rxn_idx_map = {rid: i for i, rid in enumerate(global_rxn_ids)}
 
+        log_with_timestamp(f"length of global_rxn_idx_map: {len(global_rxn_idx_map)}")
+
         cols = []
-        for rid in sample_rxn_ids:
+        # for rid in sample_rxn_ids:
+        for i in range(len(sample_rxn_ids)):
+            print(f"Processing reaction {i} of {len(sample_rxn_ids)}")
+            rid = sample_rxn_ids[i]
             idx = global_rxn_idx_map.get(rid)
             if idx is not None:
                 cols.append(global_C[keep_rows, idx])
