@@ -228,7 +228,7 @@ def _perform_fva(model: cobra.Model, exchanges: list, sample_name: str, model_da
 
     # exchanges derived from exMets (all exchanged metabolites across all individual models) -> intersect it with rxns in this particular model
     # fecal_rxns = [r.id for r in model.exchanges]
-    fecal_rxns = [rxn for rxn in model.reactions if rxn.id.startswith('EX_')]
+    fecal_rxns = [r.id for r in model.reactions if r.id.startswith('EX_')]
     exchanges = set(fecal_rxns).intersection(set(exchanges))
 
     log_with_timestamp("fecal_rxns")
@@ -237,13 +237,27 @@ def _perform_fva(model: cobra.Model, exchanges: list, sample_name: str, model_da
     print(exchanges)
 
     # cut off very small values below solver sensitivity
+    log_with_timestamp("Cutting off small values")
     tol = 1e-07
     for rxn in exchanges:
+        print(f"rxn: {rxn}")
         fecal_var = rxn
         diet_var = rxn.replace('EX_', 'Diet_EX_').replace('[fe]', '[d]')
 
-        if abs(max_flux_fecal.get(fecal_var, 0)) < tol:
-            max_flux_fecal.get(fecal_var, 0) = 0 # was == before
+        # if abs(max_flux_fecal.get(fecal_var, 0)) < tol: max_flux_fecal.get(fecal_var, 0) == 0
+        print("max flux fecal:")
+        print(max_flux_fecal.get(fecal_var, None))
+        print("min flux fecal:")
+        print(min_flux_fecal.get(fecal_var, None))
+
+        print("max flux diet:")
+        print(max_flux_diet.get(diet_var, None))
+        print("min flux diet:")
+        print(min_flux_diet.get(diet_var, None))
+
+        # Safely clamp tiny max_flux_fecal values to 0 (only if key exists)
+        if fecal_var in max_flux_fecal and abs(max_flux_fecal[fecal_var]) < tol:
+            max_flux_fecal[fecal_var] = 0.0
 
         prod = abs(min_flux_diet.get(diet_var, 0) + max_flux_fecal.get(fecal_var, 0))
         uptk = abs(max_flux_diet.get(diet_var, 0) + min_flux_fecal.get(fecal_var, 0))

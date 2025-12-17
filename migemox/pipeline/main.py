@@ -15,7 +15,7 @@ from pathlib import Path
 # Import functions from our new modules
 from migemox.pipeline.community_gem_builder import community_gem_builder
 from migemox.pipeline.community_fva_simulations import run_community_fva
-from migemox.pipeline.io_utils import collect_flux_profiles, extract_positive_net_prod_constraints
+from migemox.pipeline.io_utils import collect_flux_profiles, extract_positive_net_prod_constraints, log_with_timestamp
 from migemox.downstream_analysis.predict_microbe_contribution import predict_microbe_contributions
 from datetime import datetime, timezone
 from migemox.pipeline.io_utils import print_memory_usage
@@ -68,6 +68,9 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
         solver=solver,
         workers=2
     )
+
+    log_with_timestamp("raw_fva_results")
+    print(raw_fva_results)
 
     # 4. Collect Flux Profiles and Save
     print(f"--- Stage 2 Finished at {datetime.now(tz=timezone.utc)} ---")
