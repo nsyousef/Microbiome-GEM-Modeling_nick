@@ -17,6 +17,8 @@ from optlang import Constraint, Variable, Objective, Model as OptModel
 from tqdm import tqdm
 from migemox.pipeline.io_utils import print_memory_usage, log_with_timestamp
 from datetime import datetime, timezone
+from typing import List, Tuple
+
 
 # Default Coupling Factor (Used in https://doi.org/10.4161/gmic.22370)
 COUPLING_FACTOR = 400
@@ -106,48 +108,36 @@ def build_global_coupling_constraints(model: StructuralModel, microbe_list: list
     return C, d, dsense, ctrs
 
 def prune_coupling_constraints_by_microbe_fast(
-    global_rxn_ids: list[str],
+    global_rxn_ids: List[str],
     global_C: csr_matrix,
     global_d: np.ndarray,
     global_dsense: np.ndarray,
-    global_ctrs: np.ndarray,
-    present_microbe: list[str],
+    global_ctrs,
+    present_microbe: List[str],
     sample_model
-) -> tuple:
+) -> Tuple[csr_matrix, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Prunes the global coupling constraints (C, d, dsense, ctrs) to match the
-    microbe present in the sample-specific model.
-
-    Args:
-        global_rxn_ids (list[str]): The list of all the reaction IDs in the global model.
-        global_C (csr_matrix): The global coupling matrix.
-        global_d (np.ndarray): The global 'd' vector.
-        global_dsense (np.ndarray): The global 'dsense' vector.
-        global_ctrs (list): The global constraint names.
-        present_microbe (list[str]): List of microbe present in the sample.
-        sample_model (cobra_structural.Model): The sample-specific model after pruning microbe.
-
-    Returns:
-        tuple: A tuple containing the pruned:
-            - C (csr_matrix): Sample-specific coupling matrix.
-            - d (np.ndarray): Sample-specific 'd' vector.
-            - dsense (np.ndarray): Sample-specific 'dsense' vector.
-            - ctrs (list): Sample-specific constraint names.
+    Faster version: avoid per-column slicing and hstack, but keep behavior of
+    inserting zero columns for reactions not present in the global model.
     """
 
     print("Dimensions of matrices loaded in prune_coupling_constraints_by_microbe:")
     print(f"global_C: {global_C.shape}")
     print(f"global_d: {global_d.shape}")
     print(f"global_dsense: {global_dsense.shape}")
-    print(f"global_ctrs: {global_ctrs.shape}")
+    # if global_ctrs is a list, this will fail; if it's np.array it’s fine.
+    # You can guard it if needed:
+    try:
+        print(f"global_ctrs: {global_ctrs.shape}")
+    except AttributeError:
+        print(f"global_ctrs length: {len(global_ctrs)}")
 
     present_microbe_set = set(present_microbe)
     slack_prefix = "slack_"
-    keep_rows = []
+    keep_rows: List[int] = []
 
-    # keep_rows: find constraints belonging to microbes that are present
+    # ---- 1) Determine which constraint rows to keep ----
     for i, ctr_name in enumerate(global_ctrs):
-        # Extract microbe name from constraint name (e.g., "slack_Bacteroides_sp_2_1_33B_IEX_12ppd_S[u]tr")
         if ctr_name.startswith(slack_prefix):
             microbe_part = ctr_name[len(slack_prefix):]
             for microbe in present_microbe_set:
@@ -157,37 +147,82 @@ def prune_coupling_constraints_by_microbe_fast(
 
     log_with_timestamp(f"Length of keep_rows: {len(keep_rows)}")
 
-    if keep_rows:
-        keep_rows = np.asarray(keep_rows, dtype=int)
-
-        # Remap columns to match sample-specific model
-        sample_rxn_ids = [r.id for r in sample_model.reactions]
-        log_with_timestamp(f"length of sample_rxn_ids: {len(sample_rxn_ids)}")
-
-        global_rxn_idx_map = {rid: i for i, rid in enumerate(global_rxn_ids)}
-        log_with_timestamp(f"length of global_rxn_idx_map: {len(global_rxn_idx_map)}")
-
-        # Build ordered list of column indices matching sample_rxn_ids
-        # This will raise KeyError if a sample reaction is missing from global_rxn_ids,
-        # which is usually what you want (it signals a mismatch).
-        col_indices = [global_rxn_idx_map[rid] for rid in sample_rxn_ids]
-
-        # 1. Slice rows
-        subC = global_C[keep_rows, :]
-
-        # 2. Slice columns in one shot, in the correct order
-        pruned_C = subC[:, col_indices]
-
-        # Vectors can just be sliced by keep_rows
-        pruned_d = global_d[keep_rows, :]
-        pruned_dsense = global_dsense[keep_rows]
-        pruned_ctrs = global_ctrs[keep_rows]
-
-    else:
+    if not keep_rows:
+        # No constraints relevant for this sample
         pruned_C = csr_matrix((0, len(sample_model.reactions)))
         pruned_d = np.zeros((0, 1))
         pruned_dsense = np.array([], dtype='<U1')
         pruned_ctrs = np.array([], dtype=object)
+        return pruned_C, pruned_d, pruned_dsense, pruned_ctrs
+
+    # Convert to array for fancy indexing
+    keep_rows = np.asarray(keep_rows, dtype=int)
+
+    # ---- 2) Build mapping from global reaction IDs to column indices ----
+    sample_rxn_ids = [r.id for r in sample_model.reactions]
+    log_with_timestamp(f"length of sample_rxn_ids: {len(sample_rxn_ids)}")
+
+    global_rxn_idx_map = {rid: i for i, rid in enumerate(global_rxn_ids)}
+    log_with_timestamp(f"length of global_rxn_idx_map: {len(global_rxn_idx_map)}")
+
+    # ---- 3) Figure out which sample reactions exist in the global model ----
+    present_pairs = []   # (sample_col_index, global_col_index)
+    missing = []         # (sample_col_index, reaction_id)
+
+    for j, rid in enumerate(sample_rxn_ids):
+        gidx = global_rxn_idx_map.get(rid)
+        if gidx is None:
+            missing.append((j, rid))
+        else:
+            present_pairs.append((j, gidx))
+
+    if missing:
+        # Optional: log a few missing reactions for debugging
+        example_missing = [rid for _, rid in missing[:10]]
+        log_with_timestamp(
+            f"{len(missing)} reactions from sample model not found in global_rxn_ids, "
+            f"e.g. {example_missing}"
+        )
+
+    n_rows = len(keep_rows)
+    n_sample = len(sample_rxn_ids)
+
+    if not present_pairs:
+        # None of the sample reactions are in the global model -> all-zero matrix
+        pruned_C = csr_matrix((n_rows, n_sample))
+    else:
+        # ---- 4) Slice once on rows and existing columns ----
+        sample_positions, global_positions = zip(*present_pairs)
+        sample_positions = np.asarray(sample_positions, dtype=int)
+        global_positions = np.asarray(global_positions, dtype=int)
+
+        # First slice rows
+        subC_rows = global_C[keep_rows, :]           # shape: (n_rows, n_global)
+
+        # Then slice the existing columns as a block
+        subC_present = subC_rows[:, global_positions]  # shape: (n_rows, n_present)
+
+        # ---- 5) Remap columns to full sample size, zero where missing ----
+        # subC_present currently has columns 0..n_present-1.
+        # Each of these corresponds to some column index in the sample model order.
+        # Build a mapping: local_col_index -> sample_col_index
+        n_present = subC_present.shape[1]
+        col_map = np.empty(n_present, dtype=int)
+        col_map[np.arange(n_present)] = sample_positions
+
+        # Create a new CSR matrix with remapped column indices and full width
+        subC_present = subC_present.tocsr()
+        new_indices = col_map[subC_present.indices]   # vectorized remap
+
+        pruned_C = csr_matrix(
+            (subC_present.data, new_indices, subC_present.indptr),
+            shape=(n_rows, n_sample)
+        )
+
+    # ---- 6) Slice vectors for the kept rows ----
+    pruned_d = global_d[keep_rows, :]
+    pruned_dsense = global_dsense[keep_rows]
+    pruned_ctrs = global_ctrs[keep_rows]
 
     return pruned_C, pruned_d, pruned_dsense, pruned_ctrs
 
