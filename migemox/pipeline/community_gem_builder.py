@@ -20,7 +20,7 @@ import os
 import re
 import sys
 import gc
-from migemox.pipeline.constraints import build_global_coupling_constraints, prune_coupling_constraints_by_microbe
+from migemox.pipeline.constraints import build_global_coupling_constraints, prune_coupling_constraints_by_microbe_fast
 from migemox.pipeline.io_utils import print_memory_usage, save_model_and_constraints, load_model_and_constraints
 from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
@@ -455,7 +455,7 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
 
     # Prune coupling constraints from the global model (C, dsense, d, ctrs)
     print(f"{datetime.now(tz=timezone.utc)}: Pruning coupling constraints from global model")
-    sample_C, sample_d, sample_dsense, sample_ctrs = prune_coupling_constraints_by_microbe(
+    sample_C, sample_d, sample_dsense, sample_ctrs = prune_coupling_constraints_by_microbe_fast(
         global_rxn_ids, global_C, global_d, global_dsense, global_ctrs, present_microbe, model
     )
 

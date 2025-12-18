@@ -105,6 +105,92 @@ def build_global_coupling_constraints(model: StructuralModel, microbe_list: list
 
     return C, d, dsense, ctrs
 
+def prune_coupling_constraints_by_microbe_fast(
+    global_rxn_ids: list[str],
+    global_C: csr_matrix,
+    global_d: np.ndarray,
+    global_dsense: np.ndarray,
+    global_ctrs: np.ndarray,
+    present_microbe: list[str],
+    sample_model
+) -> tuple:
+    """
+    Prunes the global coupling constraints (C, d, dsense, ctrs) to match the
+    microbe present in the sample-specific model.
+
+    Args:
+        global_rxn_ids (list[str]): The list of all the reaction IDs in the global model.
+        global_C (csr_matrix): The global coupling matrix.
+        global_d (np.ndarray): The global 'd' vector.
+        global_dsense (np.ndarray): The global 'dsense' vector.
+        global_ctrs (list): The global constraint names.
+        present_microbe (list[str]): List of microbe present in the sample.
+        sample_model (cobra_structural.Model): The sample-specific model after pruning microbe.
+
+    Returns:
+        tuple: A tuple containing the pruned:
+            - C (csr_matrix): Sample-specific coupling matrix.
+            - d (np.ndarray): Sample-specific 'd' vector.
+            - dsense (np.ndarray): Sample-specific 'dsense' vector.
+            - ctrs (list): Sample-specific constraint names.
+    """
+
+    print("Dimensions of matrices loaded in prune_coupling_constraints_by_microbe:")
+    print(f"global_C: {global_C.shape}")
+    print(f"global_d: {global_d.shape}")
+    print(f"global_dsense: {global_dsense.shape}")
+    print(f"global_ctrs: {global_ctrs.shape}")
+
+    present_microbe_set = set(present_microbe)
+    slack_prefix = "slack_"
+    keep_rows = []
+
+    # keep_rows: find constraints belonging to microbes that are present
+    for i, ctr_name in enumerate(global_ctrs):
+        # Extract microbe name from constraint name (e.g., "slack_Bacteroides_sp_2_1_33B_IEX_12ppd_S[u]tr")
+        if ctr_name.startswith(slack_prefix):
+            microbe_part = ctr_name[len(slack_prefix):]
+            for microbe in present_microbe_set:
+                if microbe_part.startswith(microbe):
+                    keep_rows.append(i)
+                    break
+
+    log_with_timestamp(f"Length of keep_rows: {len(keep_rows)}")
+
+    if keep_rows:
+        keep_rows = np.asarray(keep_rows, dtype=int)
+
+        # Remap columns to match sample-specific model
+        sample_rxn_ids = [r.id for r in sample_model.reactions]
+        log_with_timestamp(f"length of sample_rxn_ids: {len(sample_rxn_ids)}")
+
+        global_rxn_idx_map = {rid: i for i, rid in enumerate(global_rxn_ids)}
+        log_with_timestamp(f"length of global_rxn_idx_map: {len(global_rxn_idx_map)}")
+
+        # Build ordered list of column indices matching sample_rxn_ids
+        # This will raise KeyError if a sample reaction is missing from global_rxn_ids,
+        # which is usually what you want (it signals a mismatch).
+        col_indices = [global_rxn_idx_map[rid] for rid in sample_rxn_ids]
+
+        # 1. Slice rows
+        subC = global_C[keep_rows, :]
+
+        # 2. Slice columns in one shot, in the correct order
+        pruned_C = subC[:, col_indices]
+
+        # Vectors can just be sliced by keep_rows
+        pruned_d = global_d[keep_rows, :]
+        pruned_dsense = global_dsense[keep_rows]
+        pruned_ctrs = global_ctrs[keep_rows]
+
+    else:
+        pruned_C = csr_matrix((0, len(sample_model.reactions)))
+        pruned_d = np.zeros((0, 1))
+        pruned_dsense = np.array([], dtype='<U1')
+        pruned_ctrs = np.array([], dtype=object)
+
+    return pruned_C, pruned_d, pruned_dsense, pruned_ctrs
+
 def prune_coupling_constraints_by_microbe(
     global_rxn_ids: list[str],
     global_C: csr_matrix,
