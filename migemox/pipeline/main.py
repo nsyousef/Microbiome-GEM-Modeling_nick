@@ -19,6 +19,7 @@ from migemox.pipeline.io_utils import collect_flux_profiles, extract_positive_ne
 from migemox.downstream_analysis.predict_microbe_contribution import predict_microbe_contributions
 from datetime import datetime, timezone
 from migemox.pipeline.io_utils import print_memory_usage
+import json
 
 def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: str,
                          res_filepath: str = 'Results', workers: int = 1, solver: str = 'cplex',
@@ -53,8 +54,11 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
         workers=workers
     )
 
-    log_with_timestamp("ex_mets:")
-    print(ex_mets)
+    log_with_timestamp("Writing ex_mets to file:")
+    ex_mets_path = os.path.join(res_filepath, 'ex_mets.json')
+    with open(ex_mets_path, 'w') as f:
+        json.dump(ex_mets, f)
+    log_with_timestamp(f"Written to: {ex_mets_path}")
     
     # 2. Adapt Diet
     print(f"--- Stage 1 Finished at {datetime.now(tz=timezone.utc)} ---")
