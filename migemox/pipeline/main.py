@@ -52,6 +52,9 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
         out_dir=f'{res_filepath}/Personalized_Models',
         workers=workers
     )
+
+    log_with_timestamp("ex_mets:")
+    print(ex_mets)
     
     # 2. Adapt Diet
     print(f"--- Stage 1 Finished at {datetime.now(tz=timezone.utc)} ---")

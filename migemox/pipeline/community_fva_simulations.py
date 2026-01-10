@@ -196,10 +196,10 @@ def _perform_fva(model: cobra.Model, exchanges: list, sample_name: str, model_da
                                             reaction_list=fecal_rxn_list,
                                             fraction_of_optimum=0.9999, processes=4)
     diet_rxn_list = [rxn for rxn in model.reactions if 'Diet_EX_' in rxn.id]
-    log_with_timestamp(diet_rxn_list)
+    log_with_timestamp("diet_rxn_list")
     print(diet_rxn_list)
     diet_result = flux_variability_analysis(model, 
-                                            reaction_list=[rxn for rxn in model.reactions if 'Diet_EX_' in rxn.id],
+                                            reaction_list=diet_rxn_list,
                                             fraction_of_optimum=0.9999, processes=4)
     
     print("fecal_result")

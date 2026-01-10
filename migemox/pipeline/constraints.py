@@ -19,7 +19,6 @@ from migemox.pipeline.io_utils import print_memory_usage, log_with_timestamp
 from datetime import datetime, timezone
 from typing import List, Tuple
 
-
 # Default Coupling Factor (Used in https://doi.org/10.4161/gmic.22370)
 COUPLING_FACTOR = 400
 
