@@ -4,3 +4,4 @@ notes2/
 **/__pycache__
 *.egg-info/
 .vscode/
+.ipynb_checkpoints
