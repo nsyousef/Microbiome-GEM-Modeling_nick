@@ -268,6 +268,14 @@ def reformat_gem_for_community(model: StructuralModel, microbe_model_name: str):
                     no_c_name = met.id.replace("[e]", "")
                     met.id = f'{short_microbe_name}_{no_c_name}[u]'
 
+    # NEW: Step 2b – handle extracellular metabolites that no longer appear in any reaction
+    for met in model.metabolites:
+        if "[e]" in met.id and short_microbe_name not in met.id:
+            # Convert leftover [e] mets to tagged [u] mets
+            met.compartment = "u"
+            no_c_name = met.id.replace("[e]", "")
+            met.id = f"{short_microbe_name}_{no_c_name}[u]"
+
     # Step 3: Create inter-microbe metabolite exchange
     model = _create_inter_microbe_exchange(model, short_microbe_name)
 
