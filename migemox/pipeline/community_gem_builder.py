@@ -284,7 +284,10 @@ def reformat_gem_for_community(model: StructuralModel, microbe_model_name: str):
     model = _finalize_microbe_tagging(model, short_microbe_name)
 
     # DEBUG: save the model
-    write_sbml_model(model, f"../../debugging/ind_global_mods_smallest_samp/{microbe_model_name}.sbml")
+    path = f"../../debugging/ind_global_mods_smallest_samp/{microbe_model_name}.sbml"
+    print(f"Writing model to {path}")
+    write_sbml_model(model, path)
+    print("Writing complete!")
 
     return model
 
