@@ -387,6 +387,8 @@ def build_global_gem(abundance_df: pd.DataFrame, mod_dir: str) -> tuple:
     ex_mets.update([met.id for met in first_model.metabolites if met.id.endswith('[e]')])
 
     global_model = reformat_gem_for_community(first_model, microbe_model_name=first_path)
+    breakpoint()
+
     for microbe in all_microbe[1:]:
         microbe_path = os.path.join(mod_dir, microbe + ".mat")
         model = load_structural_matlab_model(microbe_path)
