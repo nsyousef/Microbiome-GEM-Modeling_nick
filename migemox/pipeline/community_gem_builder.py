@@ -249,6 +249,8 @@ def reformat_gem_for_community(model: StructuralModel, microbe_model_name: str):
 
     # Extracting the microbe name from the microbe model name
     short_microbe_name = os.path.splitext(os.path.basename(microbe_model_name))[0]
+    print("Short microbe name:")
+    print(short_microbe_name)
 
     # Step 1: Remove all exchange reactions except for the biomass reaction
     ex_rxns = [rxn for rxn in model.reactions if "EX_" in rxn.id and "biomass" not in rxn.id]
@@ -284,7 +286,7 @@ def reformat_gem_for_community(model: StructuralModel, microbe_model_name: str):
     model = _finalize_microbe_tagging(model, short_microbe_name)
 
     # DEBUG: save the model
-    path = f"../../debugging/ind_global_mods_smallest_samp/{microbe_model_name}.sbml"
+    path = f"../../debugging/ind_global_mods_smallest_samp/{short_microbe_name}.sbml"
     print(f"Writing model to {path}")
     write_sbml_model(model, path)
     print("Writing complete!")
