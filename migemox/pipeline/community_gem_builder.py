@@ -13,6 +13,7 @@ from cobra_structural import Reaction as StructuralReaction
 from cobra_structural import Metabolite as StructuralMetabolite
 from cobra_structural.io import load_matlab_model as load_structural_matlab_model
 from cobra_structural.io import to_cobrapy_model
+from cobra_structural.io import write_sbml_model
 
 import numpy as np
 import pandas as pd
@@ -281,6 +282,9 @@ def reformat_gem_for_community(model: StructuralModel, microbe_model_name: str):
 
     # Step 4: Ensure all components are properly tagged
     model = _finalize_microbe_tagging(model, short_microbe_name)
+
+    # DEBUG: save the model
+    write_sbml_model(model, f"../../debugging/ind_global_mods_smallest_samp/{microbe_model_name}.sbml")
 
     return model
 
