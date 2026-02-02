@@ -112,7 +112,7 @@ def add_diet_fecal_compartments(model: StructuralModel, ex_mets: list | None=Non
                         general_mets.append(met.id)
         general_mets = set(general_mets)
     else:
-        general_mets = {met.id.replace("[e]", "[u]") for met in ex_mets}
+        general_mets = {met.replace("[e]", "[u]") for met in ex_mets}
 
     # Create diet and fecal compartments, with new transport and exchange reactions
     existing_mets = {m.id for m in model.metabolites}
