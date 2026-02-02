@@ -47,7 +47,7 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
         shutil.rmtree(res_filepath)
         print("Output directory cleared for fresh start.")
 
-    clean_samp_names, organisms, ex_mets, global_rxn_ids = community_gem_builder(
+    clean_samp_names, organisms, ex_mets, active_ex_mets, global_rxn_ids = community_gem_builder(
         abun_filepath=abun_filepath,
         mod_filepath=mod_filepath,
         out_dir=f'{res_filepath}/Personalized_Models',
@@ -59,6 +59,12 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
     with open(ex_mets_path, 'w') as f:
         json.dump(ex_mets, f)
     log_with_timestamp(f"Written to: {ex_mets_path}")
+
+    log_with_timestamp("Writing active_ex_mets to file:")
+    active_ex_mets_path = os.path.join(res_filepath, 'active_ex_mets.json')
+    with open(active_ex_mets_path, 'w') as f:
+        json.dump(active_ex_mets, f)
+    log_with_timestamp(f"Written to: {active_ex_mets_path}")
     
     # 2. Adapt Diet
     print(f"--- Stage 1 Finished at {datetime.now(tz=timezone.utc)} ---")

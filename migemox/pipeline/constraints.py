@@ -12,15 +12,16 @@ from cobra_structural import Model as StructuralModel
 import numpy as np
 import pandas as pd
 from scipy.io import loadmat
-from scipy.sparse import csr_matrix, vstack, hstack
+from scipy.sparse import csr_matrix, vstack, hstack, lil_matrix
 from optlang import Constraint, Variable, Objective, Model as OptModel
 from tqdm import tqdm
 from migemox.pipeline.io_utils import print_memory_usage, log_with_timestamp
 from datetime import datetime, timezone
-from typing import List, Tuple
+from typing import List, Tuple, Optional, Union
 
 # Default Coupling Factor (Used in https://doi.org/10.4161/gmic.22370)
 COUPLING_FACTOR = 400
+
 
 
 def build_global_coupling_constraints(model: StructuralModel, microbe_list: list[str], coupling_factor: float=400):
@@ -315,7 +316,7 @@ def apply_couple_constraints(model: cobra.Model, model_data: dict) -> cobra.Mode
     Applies biomass coupling constraints to a cobra model using optlang.
 
     This function reads the pre-calculated coupling matrix (C), right-hand side (d),
-    and sense vector (dsense) from a .mat file, and adds them as linear
+    and sense vector (dsense) from model_data, and adds them as linear
     constraints to the provided cobra model's solver interface.
 
     Args:
@@ -498,3 +499,183 @@ def run_sequential_fva(opt_model, vars: list, obj_expr,
     }).set_index('rxn_id')
 
     return df['min_flux'].to_dict(), df['max_flux'].to_dict()
+
+def couple_rxn_list_to_rxn(
+    model: cobra.Model,
+    rxn_list: Optional[List[str]] = None,
+    rxn_c: Union[str, cobra.Reaction, List[str]] = None,
+    c: Union[float, int, List[float], np.ndarray] = 1000.0,
+    u: Union[float, int, List[float], np.ndarray] = 0.01,
+) -> cobra.Model:
+    """
+    Python/CobraPy implementation of the MATLAB function coupleRxnList2Rxn.
+
+    Adds coupling constraints vi ~ v_rxnC for each reaction in rxn_list,
+    encoded as linear constraints and applied via `apply_couple_constraints`.
+
+    For irreversible reactions in rxn_list:
+        vi - c * v_rxnC <= u
+
+    For reversible reactions in rxn_list (reverse direction):
+        vi + c * v_rxnC >= u
+
+    Args:
+        model:      cobra.Model
+        rxn_list:   list of reaction IDs to be coupled. If None/empty, all reactions.
+        rxn_c:      reaction to couple to (ID, Reaction, or list with single ID).
+        c:          scalar or vector of coupling factors, length == len(rxn_list)
+                    (default 1000)
+        u:          scalar or vector of thresholds, length == len(rxn_list)
+                    (default 0.01)
+
+    Returns:
+        cobra.Model with added coupling constraints (via optlang).
+    """
+    if rxn_list is None or len(rxn_list) == 0:
+        rxn_list = [rxn.id for rxn in model.reactions]
+
+    # Normalize rxn_c to a single reaction id string
+    if rxn_c is None:
+        raise ValueError("rxn_c (the coupled reaction) must be provided.")
+
+    if isinstance(rxn_c, cobra.Reaction):
+        rxn_c_id = rxn_c.id
+    elif isinstance(rxn_c, str):
+        rxn_c_id = rxn_c
+    elif isinstance(rxn_c, (list, tuple, np.ndarray)):
+        if len(rxn_c) != 1:
+            raise ValueError("rxn_c should be a single reaction (or a list of length 1).")
+        rxn_c_id = rxn_c[0] if not isinstance(rxn_c[0], cobra.Reaction) else rxn_c[0].id
+    else:
+        raise TypeError("rxn_c must be a reaction ID, cobra.Reaction, or list of one of those.")
+
+    # Sanity checks
+    model_rxn_ids = [rxn.id for rxn in model.reactions]
+    rxn_index = {rid: i for i, rid in enumerate(model_rxn_ids)}
+
+    missing = [rid for rid in rxn_list if rid not in rxn_index]
+    if missing:
+        raise ValueError(f"The following reactions in rxn_list are not in the model: {missing}")
+
+    if rxn_c_id not in rxn_index:
+        # Mirror the original MATLAB behavior: warn but proceed
+        import warnings
+        warnings.warn(f"Coupled reaction '{rxn_c_id}' is not in the model.", UserWarning)
+
+    # Original nRxnList is defined *before* possibly adding rxnC
+    n_rxn_list = len(rxn_list)
+
+    # Handle c and u as vectors of length n_rxn_list (to mimic MATLAB behavior)
+    def _make_vec(param, name: str):
+        if np.isscalar(param):
+            return np.full(n_rxn_list, float(param))
+        arr = np.asarray(param, dtype=float).ravel()
+        if arr.size != n_rxn_list:
+            raise ValueError(
+                f"Parameter '{name}' must be scalar or of length len(rxn_list)={n_rxn_list}, "
+                f"got length {arr.size}."
+            )
+        return arr
+
+    c_vec = _make_vec(c, "c")  # shape (n,)
+    u_vec = _make_vec(u, "u")  # shape (n,)
+
+    # Reversibility: revs = model.lb(rxn_list) < 0   (True if reversible)
+    lbs = np.array([model.reactions[rxn_index[rid]].lower_bound for rid in rxn_list])
+    revs = lbs < 0  # boolean array length n_rxn_list
+
+    # Constraint IDs: slack_<rxn>, slack_<rxn>_R (forward and reverse form)
+    ctrs_forward = [f"slack_{rid}" for rid in rxn_list]
+    ctrs_reverse = [f"slack_{rid}_R" for rid in rxn_list]
+    ctrs_mat = np.vstack([ctrs_forward, ctrs_reverse])  # shape (2, n)
+    # MATLAB column-major linearization: [col1; col2; ...]
+    ctrs_vec = ctrs_mat.flatten(order="F")  # length 2n
+
+    # plusminus = [ones(1,n); -ones(1,n)]   (2 x n)
+    plusminus_mat = np.vstack([np.ones(n_rxn_list), -np.ones(n_rxn_list)])  # (2, n)
+    plusminus_vec = plusminus_mat.flatten(order="F")  # (2n,) -> [1,-1,1,-1,...]
+
+    # toRemove = [false(1,n); ~revs'] then (:)
+    #   -> keep all forward rows; drop reverse rows for irreversible reactions
+    to_remove_mat = np.vstack([np.zeros(n_rxn_list, dtype=bool), ~revs])
+    to_remove_vec = to_remove_mat.flatten(order="F")  # (2n,)
+
+    # coefs: sparse(2*n, n + numel(setdiff(rxnC,rxnList)))
+    # Here rxn_c_id is a single reaction; if not in rxn_list, we add one extra column.
+    extra_cols = 0 if rxn_c_id in rxn_list else 1
+    n_cols = n_rxn_list + extra_cols  # constrained rxns + optional extra rxn_c column
+
+    coefs = lil_matrix((2 * n_rxn_list, n_cols), dtype=float)
+
+    # rxnInd = [1:n; 1:n]; rxnInd(:) (MATLAB 1-based). For zero-based:
+    # rxnInd_mat = [0..n-1; 0..n-1]
+    rxn_ind_mat = np.vstack([np.arange(n_rxn_list), np.arange(n_rxn_list)])  # (2, n)
+    rxn_ind_vec = rxn_ind_mat.flatten(order="F")  # (2n,)
+
+    # constInd = 1:2*n (MATLAB 1-based); here zero-based row indices 0..2n-1
+    row_indices = np.arange(2 * n_rxn_list)
+
+    # Set diagonal entries for vi (each constraint row has its own vi with coeff 1)
+    for r, c_idx in zip(row_indices, rxn_ind_vec):
+        coefs[r, c_idx] = 1.0
+
+    # Determine the column index for rxn_c_id in this small coefs matrix
+    if rxn_c_id in rxn_list:
+        rxn_cid_col = rxn_list.index(rxn_c_id)  # among the first n_rxn_list columns
+    else:
+        rxn_cid_col = n_cols - 1  # extra column at the end
+
+    # cs = - plusminus * c  (MATLAB implicit expansion)
+    # plusminus_mat: (2, n); c_vec: (n,) -> broadcast to (2, n)
+    cs_mat = -plusminus_mat * c_vec  # (2, n)
+    cs_vec = cs_mat.flatten(order="F")  # (2n,)
+
+    # Put coupling coefficients in column rxn_cid_col
+    for r, val in zip(row_indices, cs_vec):
+        coefs[r, rxn_cid_col] += val  # += in case rxn_c is also in rxn_list
+
+    # dsenses = [repmat('L',1,n); repmat('G',1,n)]; dsenses(:)
+    dsenses_mat = np.vstack([np.full(n_rxn_list, "L"), np.full(n_rxn_list, "G")])
+    dsenses_vec = dsenses_mat.flatten(order="F")  # (2n,)
+
+    # ds = plusminus * u
+    ds_mat = plusminus_mat * u_vec  # (2, n)
+    ds_vec = ds_mat.flatten(order="F")  # (2n,)
+
+    # Remove rows corresponding to non-reversible reactions (reverse constraint removed)
+    keep_mask = ~to_remove_vec
+    coefs_kept = coefs[keep_mask, :]          # (n_kept, n_cols)
+    ds_kept = ds_vec[keep_mask]               # (n_kept,)
+    dsenses_kept = dsenses_vec[keep_mask]     # (n_kept,)
+    ctrs_kept = np.array(ctrs_vec, dtype=object)[keep_mask]  # (n_kept,)
+
+    # Map the small coefficient matrix to full model matrix C of size (n_kept, n_model_rxns)
+    n_model_rxns = len(model.reactions)
+    # Column mapping from our n_cols to model reaction indices:
+    #   first n_rxn_list columns -> rxn_list
+    #   optional extra column    -> rxn_c_id
+    col_rxn_ids = list(rxn_list) + ([] if extra_cols == 0 else [rxn_c_id])
+    mapping_rows = np.arange(n_cols)
+    mapping_cols = np.array([rxn_index[rid] for rid in col_rxn_ids], dtype=int)
+
+    # P has 1 at (j, model_index_of_col_j)
+    P = csr_matrix(
+        (np.ones(n_cols), (mapping_rows, mapping_cols)),
+        shape=(n_cols, n_model_rxns),
+    )
+
+    C_small_csr = coefs_kept.tocsr()
+    C_full = C_small_csr.dot(P)  # shape (n_kept, n_model_rxns)
+
+    # Prepare model_data dict for apply_couple_constraints
+    model_data = {
+        "C": C_full,
+        "d": ds_kept.astype(float),
+        "dsense": np.array(dsenses_kept, dtype=str),
+        "ctrs": ctrs_kept,  # not used by apply_couple_constraints, but kept for completeness
+    }
+
+    # Apply constraints to the model (in-place) and return it
+    model_coupled = apply_couple_constraints(model, model_data)
+
+    return model_coupled

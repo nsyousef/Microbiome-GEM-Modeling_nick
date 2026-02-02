@@ -15,13 +15,16 @@ from cobra_structural.io import load_matlab_model as load_structural_matlab_mode
 from cobra_structural.io import to_cobrapy_model
 from cobra_structural.io import write_sbml_model
 
+from cobra.io import load_matlab_model
+from cobra.flux_analysis import flux_variability_analysis
+
 import numpy as np
 import pandas as pd
 import os
 import re
 import sys
 import gc
-from migemox.pipeline.constraints import build_global_coupling_constraints, prune_coupling_constraints_by_microbe_fast
+from migemox.pipeline.constraints import build_global_coupling_constraints, prune_coupling_constraints_by_microbe_fast, couple_rxn_list_to_rxn
 from migemox.pipeline.io_utils import print_memory_usage, save_model_and_constraints, load_model_and_constraints
 from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
@@ -59,7 +62,7 @@ def create_rxn(rxn_identifier: str, name: str, subsystem: str, bounds: tuple) ->
     rxn.upper_bound = ub
     return rxn
 
-def add_diet_fecal_compartments(model: StructuralModel) -> StructuralModel:
+def add_diet_fecal_compartments(model: StructuralModel, ex_mets: list | None=None) -> StructuralModel:
     """
     Add diet and fecal compartments to community model for host interaction.
     
@@ -84,6 +87,9 @@ def add_diet_fecal_compartments(model: StructuralModel) -> StructuralModel:
     
     Args:
         model: Community model with microbe-tagged reactions (structural)
+        ex_mets: An optional list of extracellular mets to use. If None, 
+                 extracts generic mets from all IEX reactions to use as 
+                 extracellular mets.
         
     Returns:
         Structural Model with diet and fecal compartments and exchange and transport reactions
@@ -96,14 +102,17 @@ def add_diet_fecal_compartments(model: StructuralModel) -> StructuralModel:
     # Create the diet and fecal compartments for reactions and metabolites
     # Get all of our general extracellular metabolites
     general_mets = []
-    for reac in model.reactions:
-        if "IEX" in reac.id:
-            iex_reac = model.reactions.get_by_id(reac.id)
-            # Pick only general (unlabeled) metabolites on the LHS
-            for met in iex_reac.reactants:
-                if "[u]" in met.id:
-                    general_mets.append(met.id)
-    general_mets = set(general_mets)
+    if ex_mets is None:
+        for reac in model.reactions:
+            if "IEX" in reac.id:
+                iex_reac = model.reactions.get_by_id(reac.id)
+                # Pick only general (unlabeled) metabolites on the LHS
+                for met in iex_reac.reactants:
+                    if "[u]" in met.id:
+                        general_mets.append(met.id)
+        general_mets = set(general_mets)
+    else:
+        general_mets = set(ex_mets)
 
     # Create diet and fecal compartments, with new transport and exchange reactions
     existing_mets = {m.id for m in model.metabolites}
@@ -365,6 +374,102 @@ def prune_zero_abundance_microbe(model: StructuralModel, zero_abundance_microbe:
     print(f"Pruned {len(metabolites_to_remove)} Metabolites")
     return model
 
+def get_active_ex_mets(mod_path: str, biomass_name: str = None) -> set:
+    """
+    Get the active exchange metabolites in a MATLAB model.
+
+    This function loads the MATLAB model and gets the active exchange reactions in the model.
+    It does so using a process that mimicks the process used by MMT.
+
+    The process is as follows:
+
+    1) Load the model from the file
+    2) Find the biomass reaction if not provided.
+    3) Find all exchange reactions and metabolites.
+    4) Apply standard MiGEMox coupling constraints to all reactions in the model.
+    5) Run FVA.
+    6) Find all exchange reactions with a min or max flux whose absolute value is greater than 
+       0.00000001. These are the active exchange reactions.
+    7) Convert these exchange reactions to metabolite IDs and return the list of active exchange metabolites.
+
+    **Important Note:** This function does not modify the model's diet. It just uses the exchange bounds as they are
+                        when the model file is loaded. This is in keeping with the way MMT appears to behave as of 
+                        Feb 2, 2026. TODO: add functionality to ensure the FVA is run on complete medium, or allow user
+                        to specify diet of choice.
+    
+    Parameters:
+        mod_path: The path to the model file to run FVA on.
+        biomass_name: If provided, treats the reaction with this ID as the biomass reaction. 
+                      The reaction must exist in the model if provided. If this value is not
+                      provided, the biomass reaction will be determined by searching for reactions
+                      whose IDs start with 'bio'. It then picks an arbitrary one if there are multiple.
+
+    Returns:
+        A set of the active exchange metabolites in the model.
+    """
+
+    # check that model path exists and is folder
+    if not os.path.exists(mod_path):
+        raise FileNotFoundError(f"The file {mod_path} does not exist.")
+    
+    if not os.path.isfile(mod_path):
+        raise ValueError(f"The path {mod_path} needs to point to a file, but points to a folder.")
+
+    # load model
+    model = load_matlab_model(mod_path)
+
+    # set the biomass to the provided name, or search for a name
+    if biomass_name is None: 
+        # MMT finds the biomass reaction by searching for reactions that start with 'bio'
+        biomass_candidates = [rxn.id for rxn in model.reactions if rxn.id.startswith('bio')]
+        if len(biomass_candidates) > 1:
+            print(f"WARNING: found multiple biomass reactions for model:\n{mod_path}. Using {biomass_candidates[0]} as the biomass.")
+        if len(biomass_candidates < 1):
+            raise ValueError("Please define the biomass objective functions for each model manually through the biomass_name input parameter.")
+        biomass_name = biomass_candidates[0]
+        model.objective = biomass_name
+    else:
+        if biomass_name not in {rxn.id for rxn in model.reactions}:
+            raise ValueError(f"Reaction {biomass_name} does not exist in the model.")
+        model.objective = biomass_name
+
+    # find all exchange mets and reactions
+    ex_mets = [met.id for met in model.metabolites if '[e]' in met.id]
+    ex_rxns = []
+    for i in range(len(ex_mets)):
+        ex_rxns.append(f"EX_{ex_mets[i]}")
+        ex_rxns[i] = ex_rxns[i].replace('[e]', '(e)')
+
+    # account for deprecated nomenclature
+    model_rxns = {rxn.id for rxn in model.reactions}
+    ex_rxns = list(set(ex_rxns).interesection(model_rxns))
+
+    # compute which exchanges can carry flux
+    # to avoid bugs, do this with coupling constraints implemented
+    model_coupled = couple_rxn_list_to_rxn(
+        model,
+        [rxn.id for rxn in model.reactions],
+        biomass_name,
+        400,
+        0
+    )
+
+    fva_res = flux_variability_analysis(
+        model_coupled, 
+        reaction_list=ex_rxns,
+        fraction_of_optimum=0
+    )
+
+    # get all exchange reactions that carry minimum or maximum flux
+    flux_threshold = 0.00000001
+    min_flux = fva_res.index[fva_res['minimum'].abs() > flux_threshold]
+    max_flux = fva_res.index[fva_res['maximum'].abs() > flux_threshold]
+
+    pruned_ex_rxns = set(min_flux).union(set(max_flux))
+    pruned_ex_mets = {rxn.replace('EX_', '').replace('(e)', '[e]') for rxn in pruned_ex_rxns}
+
+    return pruned_ex_mets
+
 def build_global_gem(abundance_df: pd.DataFrame, mod_dir: str) -> tuple:
     """
     Loads all microbe found in the abundance table and builds a unified, unpruned community model.
@@ -391,12 +496,20 @@ def build_global_gem(abundance_df: pd.DataFrame, mod_dir: str) -> tuple:
     ex_mets = set()
     ex_mets.update([met.id for met in first_model.metabolites if met.id.endswith('[e]')])
 
+    # NEW: also get active exchange metabolites
+    active_ex_mets = set()
+    active_ex_mets.union(get_active_ex_mets(first_path))
+
     global_model = reformat_gem_for_community(first_model, microbe_model_name=first_path)
 
     for microbe in all_microbe[1:]:
         microbe_path = os.path.join(mod_dir, microbe + ".mat")
         model = load_structural_matlab_model(microbe_path)
         ex_mets.update([met.id for met in model.metabolites if met.id.endswith('[e]')])
+
+        # NEW: also get active exchange mets
+        active_ex_mets.union(get_active_ex_mets(microbe_path))
+
         tagged_model = reformat_gem_for_community(model, microbe_path)
         # Avoid duplicate reaction IDs
         existing_rxns = {r.id for r in global_model.reactions}
@@ -406,14 +519,14 @@ def build_global_gem(abundance_df: pd.DataFrame, mod_dir: str) -> tuple:
     print(f"{datetime.now(tz=timezone.utc)}: Finished adding GEM reconstructions to community".center(40, '*'))
 
     print(f"{datetime.now(tz=timezone.utc)}: Adding diet and fecal compartments".center(40, '*'))
-    clean_model = add_diet_fecal_compartments(model=global_model)
+    clean_model = add_diet_fecal_compartments(model=global_model, ex_mets=active_ex_mets)
     print(f"{datetime.now(tz=timezone.utc)}: Done adding diet and fecal compartments".center(40, '*'))
     print_memory_usage()
 
     global_C, global_d, global_dsense, global_ctrs = build_global_coupling_constraints(clean_model, all_microbe)
 
     print(f"{datetime.now(tz=timezone.utc)}: Completed build_global_coupling_constraints.")
-    return clean_model, global_C, global_d, global_dsense, global_ctrs, list(sorted(ex_mets))
+    return clean_model, global_C, global_d, global_dsense, global_ctrs, list(sorted(ex_mets)), list(sorted(active_ex_mets))
 
 def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.DataFrame, 
                        abun_path: str, out_dir: str) -> str:
@@ -533,7 +646,7 @@ def build_and_save_global_model(abun_filepath: str, mod_filepath: str, out_filep
                 name = 'sample_' + name
         clean_samp_names.append(name)
 
-    global_model, global_C, global_d, global_dsense, global_ctrs, ex_mets = build_global_gem(sample_info, mod_filepath)
+    global_model, global_C, global_d, global_dsense, global_ctrs, ex_mets, active_ex_mets = build_global_gem(sample_info, mod_filepath)
     samples = sample_info.columns.tolist()
 
     # print dimensions of matrices for debugging
@@ -543,7 +656,6 @@ def build_and_save_global_model(abun_filepath: str, mod_filepath: str, out_filep
     print(f"global_d: {global_d.shape}")
     print(f"global_dsense: {global_dsense.shape}")
     print(f"global_ctrs: {global_ctrs.shape}")
-    print(f"ex_mets: {len(ex_mets)}")
 
     # get list of reactions as a sanity check
     global_rxn_ids = [r.id for r in global_model.reactions]
@@ -568,7 +680,7 @@ def build_and_save_global_model(abun_filepath: str, mod_filepath: str, out_filep
     print(f"{datetime.now(tz=timezone.utc)}: Memory usage before deleting global model")
     print_memory_usage()
 
-    return samples, global_model_dir, sample_info, clean_samp_names, ex_mets, global_rxn_ids
+    return samples, global_model_dir, sample_info, clean_samp_names, ex_mets, active_ex_mets, global_rxn_ids
 
 def community_gem_builder(abun_filepath: str, mod_filepath: str, out_dir: str, workers=1) -> tuple:
     """
@@ -594,7 +706,7 @@ def community_gem_builder(abun_filepath: str, mod_filepath: str, out_dir: str, w
     """
 
     print(f"{datetime.now(tz=timezone.utc)}: Starting MiGeMox pipeline".center(40, '*'))
-    samples, global_model_dir, sample_info, clean_samp_names, ex_mets, global_rxn_ids = build_and_save_global_model(
+    samples, global_model_dir, sample_info, clean_samp_names, ex_mets, active_ex_mets, global_rxn_ids = build_and_save_global_model(
         abun_filepath, 
         mod_filepath, 
         out_dir, 
@@ -619,4 +731,4 @@ def community_gem_builder(abun_filepath: str, mod_filepath: str, out_dir: str, w
     #     for f in tqdm(futures, desc='Building sample GEMs'):
     #         f.result()
     print(f"{datetime.now(tz=timezone.utc)}: Finished building Sample GEMs") 
-    return clean_samp_names, sample_info.index.tolist(), ex_mets, global_rxn_ids
+    return clean_samp_names, sample_info.index.tolist(), ex_mets, active_ex_mets, global_rxn_ids
