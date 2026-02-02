@@ -424,7 +424,7 @@ def get_active_ex_mets(mod_path: str, biomass_name: str = None) -> set:
         biomass_candidates = [rxn.id for rxn in model.reactions if rxn.id.startswith('bio')]
         if len(biomass_candidates) > 1:
             print(f"WARNING: found multiple biomass reactions for model:\n{mod_path}. Using {biomass_candidates[0]} as the biomass.")
-        if len(biomass_candidates < 1):
+        if len(biomass_candidates) < 1:
             raise ValueError("Please define the biomass objective functions for each model manually through the biomass_name input parameter.")
         biomass_name = biomass_candidates[0]
         model.objective = biomass_name
