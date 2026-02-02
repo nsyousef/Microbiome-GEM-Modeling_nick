@@ -442,7 +442,7 @@ def get_active_ex_mets(mod_path: str, biomass_name: str = None) -> set:
 
     # account for deprecated nomenclature
     model_rxns = {rxn.id for rxn in model.reactions}
-    ex_rxns = list(set(ex_rxns).interesection(model_rxns))
+    ex_rxns = list(set(ex_rxns).intersection(model_rxns))
 
     # compute which exchanges can carry flux
     # to avoid bugs, do this with coupling constraints implemented
