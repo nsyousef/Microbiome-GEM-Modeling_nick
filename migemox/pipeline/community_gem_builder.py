@@ -498,7 +498,7 @@ def build_global_gem(abundance_df: pd.DataFrame, mod_dir: str) -> tuple:
 
     # NEW: also get active exchange metabolites
     active_ex_mets = set()
-    active_ex_mets.union(get_active_ex_mets(first_path))
+    active_ex_mets = active_ex_mets.union(get_active_ex_mets(first_path))
 
     global_model = reformat_gem_for_community(first_model, microbe_model_name=first_path)
 
@@ -508,7 +508,7 @@ def build_global_gem(abundance_df: pd.DataFrame, mod_dir: str) -> tuple:
         ex_mets.update([met.id for met in model.metabolites if met.id.endswith('[e]')])
 
         # NEW: also get active exchange mets
-        active_ex_mets.union(get_active_ex_mets(microbe_path))
+        active_ex_mets = active_ex_mets.union(get_active_ex_mets(microbe_path))
 
         tagged_model = reformat_gem_for_community(model, microbe_path)
         # Avoid duplicate reaction IDs
