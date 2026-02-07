@@ -47,6 +47,7 @@ def find_biomass_candidates(
     :type model: Model | StructuralModel
     :param microbe_name: The name of the microbe being checked, if reactions are tagged with microbe name. E.g. `E_coli`
     :type microbe_name: str | None
+    :return: A list of reaction objects corresponding to potential biomass reactions.
     """
 
     # get all reaction IDs in model
@@ -57,6 +58,8 @@ def find_biomass_candidates(
         rxn_ids = [rxn_id.replace(microbe_name.lower() + '_', '') for rxn_id in rxn_ids]
 
     # find reaction IDs that start with 'bio'
-    biomass_candidates = [rxn_id for rxn_id in rxn_ids if rxn_id.startswith("bio")]
+    biomass_candidate_ids = [rxn_id for rxn_id in rxn_ids if rxn_id.startswith("bio")]
 
-    return biomass_candidates
+    biomass_candidate_rxns = [model.reactions.get_by_id(rxn_id) for rxn_id in biomass_candidate_ids]
+
+    return biomass_candidate_rxns
