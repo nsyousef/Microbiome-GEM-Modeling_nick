@@ -54,8 +54,6 @@ def build_global_coupling_constraints(model: StructuralModel, microbe_list: list
     for microbe in microbe_list:
 
         print(f"{datetime.now(tz=timezone.utc)}: Microbe: {microbe}")
-        print("Memory usage:")
-        print_memory_usage()
         # Find microbe reactions and biomass reaction
         microbe_rxns = [r for r in model.reactions if r.id.startswith(microbe + '_')]
         # biomass_rxns = [r for r in microbe_rxns if 'biomass' in r.id.lower()] # an old way to find biomass; inconsistent with MMT
