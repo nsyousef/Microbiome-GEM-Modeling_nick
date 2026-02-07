@@ -16,6 +16,7 @@ from scipy.sparse import csr_matrix, vstack, hstack, lil_matrix
 from optlang import Constraint, Variable, Objective, Model as OptModel
 from tqdm import tqdm
 from migemox.pipeline.io_utils import print_memory_usage, log_with_timestamp
+from migemox.pipeline.model_utils import find_biomass_candidates
 from datetime import datetime, timezone
 from typing import List, Tuple, Optional, Union
 
@@ -57,10 +58,14 @@ def build_global_coupling_constraints(model: StructuralModel, microbe_list: list
         print_memory_usage()
         # Find microbe reactions and biomass reaction
         microbe_rxns = [r for r in model.reactions if r.id.startswith(microbe + '_')]
-        biomass_rxns = [r for r in microbe_rxns if 'biomass' in r.id.lower()]
+        # biomass_rxns = [r for r in microbe_rxns if 'biomass' in r.id.lower()] # an old way to find biomass; inconsistent with MMT
+        biomass_rxns = find_biomass_candidates(model, microbe)
 
         if not biomass_rxns:
-            continue
+            raise RuntimeError(
+                f"Could not find biomass reaction for model {microbe}. \
+                    Please ensure the biomass reaction ID starts with 'bio' for this model."
+                )
 
         biomass_rxn = biomass_rxns[0]
         biomass_idx = rxn_id_to_index[biomass_rxns[0].id]
