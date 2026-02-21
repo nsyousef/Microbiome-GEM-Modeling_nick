@@ -403,7 +403,7 @@ def extract_positive_net_prod_constraints(csv_path: str, threshold: float = 0) -
     """
     df = pd.read_csv(csv_path, index_col=0)
     # keep only rows with at least one non-zero flux
-    mask = (df.iloc[:, 1:].abs() > threshold).any(axis=1)
+    mask = (df.iloc[:, 0:].abs() > threshold).any(axis=1)
     filtered = df[mask]
     filtered.index = filtered.index.to_series().apply(lambda x: x.split("[")[0].replace("EX_", ""))
     return filtered.dropna(how="all", axis=1).to_dict(orient="index")
