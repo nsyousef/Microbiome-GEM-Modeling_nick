@@ -67,7 +67,8 @@ def build_global_coupling_constraints(model: StructuralModel, microbe_list: list
 
         biomass_rxn = biomass_rxns[0]
         biomass_idx = rxn_id_to_index[biomass_rxns[0].id]
-
+        
+        const_count = 0
         for rxn in microbe_rxns:
             if rxn.id == biomass_rxn.id:
                 continue  # Don't couple biomass to itself
@@ -78,6 +79,7 @@ def build_global_coupling_constraints(model: StructuralModel, microbe_list: list
             row_indices = [rxn_idx, biomass_idx]
             row_data = [1.0, -coupling_factor]
             constraint_row = csr_matrix((row_data, ([0, 0], row_indices)), shape=(1, len(model.reactions)))
+            const_count += 1
 
             all_constraints.append(constraint_row)
             all_d.append(0.0)
@@ -89,11 +91,15 @@ def build_global_coupling_constraints(model: StructuralModel, microbe_list: list
                 row_indices_rev = [rxn_idx, biomass_idx]
                 row_data_rev = [1.0, coupling_factor]
                 constraint_row_rev = csr_matrix((row_data_rev, ([0, 0], row_indices_rev)), shape=(1, len(model.reactions)))
+                const_count += 1
 
                 all_constraints.append(constraint_row_rev)
                 all_d.append(0.0)
                 all_dsense.append('G')
                 all_ctrs.append(f"slack_{rxn.id}_R")
+                
+        print(microbe)
+        print(f"{const_count}x{len(microbe_rxns)}")
 
     if all_constraints:
         C = vstack(all_constraints)
