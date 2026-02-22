@@ -41,11 +41,11 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
         biomass_bounds: Tuple (lower, upper) for community biomass reaction.
         analyze_contributions: Boolean, whether to run strain contribution analysis.
     """
-    print(f"--- MiGEMox Pipeline Started at {datetime.now(tz=timezone.utc)} ---")
-    print(f"Current memory usage: {print_memory_usage()}")
+    log_with_timestamp(f"--- MiGEMox Pipeline Started at {datetime.now(tz=timezone.utc)} ---")
+    log_with_timestamp(f"Current memory usage: {print_memory_usage()}")
     if fresh_start and os.path.exists(res_filepath):
         shutil.rmtree(res_filepath)
-        print("Output directory cleared for fresh start.")
+        log_with_timestamp("Output directory cleared for fresh start.")
 
     clean_samp_names, organisms, ex_mets, active_ex_mets, global_rxn_ids = community_gem_builder(
         abun_filepath=abun_filepath,
@@ -67,8 +67,8 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
     log_with_timestamp(f"Written to: {active_ex_mets_path}")
     
     # 2. Adapt Diet
-    print(f"--- Stage 1 Finished at {datetime.now(tz=timezone.utc)} ---")
-    print("\n--- Stage 2: Adapting Diet and Running Simulations ---")
+    log_with_timestamp(f"--- Stage 1 Finished at {datetime.now(tz=timezone.utc)} ---")
+    log_with_timestamp("\n--- Stage 2: Adapting Diet and Running Simulations ---")
 
     # 3. Simulate Microbiota Models
     exchanges, net_production, net_uptake, min_net_fecal_excretion, raw_fva_results = run_community_fva(
@@ -82,12 +82,9 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
         workers=2
     )
 
-    log_with_timestamp("raw_fva_results")
-    print(raw_fva_results)
-
     # 4. Collect Flux Profiles and Save
-    print(f"--- Stage 2 Finished at {datetime.now(tz=timezone.utc)} ---")
-    print("\n--- Collecting and Saving Simulation Results ---")
+    log_with_timestamp(f"--- Stage 2 Finished at {datetime.now(tz=timezone.utc)} ---")
+    log_with_timestamp("\n--- Collecting and Saving Simulation Results ---")
     net_secretion_df, net_uptake_df = collect_flux_profiles(
         samp_names=clean_samp_names,
         exchanges=exchanges,
@@ -100,21 +97,18 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
     raw_fva_df.index.names = ['Sample', 'Reaction']
     raw_fva_df.to_csv(Path(res_filepath) / 'inputDiet_raw_fva_results.csv')
     
-    print(f"Net secretion and uptake results saved to {res_filepath}.")
+    log_with_timestamp(f"Net secretion and uptake results saved to {res_filepath}.")
 
     # 5. Run Strain Contribution Analysis (Optional)
     if analyze_contributions:
-        print("\n--- Downstream Analysis: Predicting Strain Contributions ---")
-        print(f"--- Started at {datetime.now(tz=timezone.utc)} ---")
+        log_with_timestamp("\n--- Downstream Analysis: Predicting Strain Contributions ---")
+        log_with_timestamp(f"--- Started at {datetime.now(tz=timezone.utc)} ---")
 
         # VMH_ID from met names like ac[fe] -> ac
         # mets = [x.split('[')[0] for x in ex_mets]
         diet_mod_dir_for_contributions = os.path.join(res_filepath, 'Diet')
         pos_net_prod = extract_positive_net_prod_constraints(Path(res_filepath) / 'inputDiet_net_secretion_fluxes.csv')
-        print(f"pos_net_prod: {pos_net_prod}")
         mets = sorted(list(pos_net_prod.keys()))
-
-        print(f"mets: {mets}")
 
         kwargs = dict(
             diet_mod_dir=diet_mod_dir_for_contributions,
@@ -125,9 +119,9 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
         )
         if use_net_production_dict: kwargs['net_production_dict'] = pos_net_prod
         min_fluxes_df, max_fluxes_df, flux_spans_df = predict_microbe_contributions(**kwargs)
-        print(f"Strain contribution analysis completed at {datetime.now(tz=timezone.utc)} and results saved.")
+        log_with_timestamp(f"Strain contribution analysis completed at {datetime.now(tz=timezone.utc)} and results saved.")
 
-    print("\n--- MiGEMox Pipeline Finished ---")
+    log_with_timestamp("\n--- MiGEMox Pipeline Finished ---")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the MiGEMox (Microbiome Genome-Scale Modeling) pipeline.")

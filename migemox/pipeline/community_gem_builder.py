@@ -18,11 +18,9 @@ from cobra_structural.io import write_sbml_model
 from cobra.io import load_matlab_model
 from cobra.flux_analysis import flux_variability_analysis
 
-import numpy as np
 import pandas as pd
 import os
 import re
-import sys
 import gc
 from migemox.pipeline.constraints import build_global_coupling_constraints, prune_coupling_constraints_by_microbe_fast, couple_rxn_list_to_rxn
 from migemox.pipeline.io_utils import print_memory_usage, save_model_and_constraints, load_model_and_constraints
@@ -258,8 +256,6 @@ def reformat_gem_for_community(model: StructuralModel, microbe_model_name: str):
 
     # Extracting the microbe name from the microbe model name
     short_microbe_name = os.path.splitext(os.path.basename(microbe_model_name))[0]
-    print("Short microbe name:")
-    print(short_microbe_name)
 
     # Step 1: Remove all exchange reactions except for the biomass reaction
     ex_rxns = [rxn for rxn in model.reactions if "EX_" in rxn.id and "biomass" not in rxn.id]
@@ -295,10 +291,10 @@ def reformat_gem_for_community(model: StructuralModel, microbe_model_name: str):
     model = _finalize_microbe_tagging(model, short_microbe_name)
 
     # DEBUG: save the model
-    path = f"../../debugging/ind_global_mods_smallest_samp/{short_microbe_name}.sbml"
-    print(f"Writing model to {path}")
-    write_sbml_model(model, path)
-    print("Writing complete!")
+    # path = f"../../debugging/ind_global_mods_smallest_samp/{short_microbe_name}.sbml"
+    # print(f"Writing model to {path}")
+    # write_sbml_model(model, path)
+    # print("Writing complete!")
 
     return model
 
@@ -443,6 +439,14 @@ def get_active_ex_mets(mod_path: str, biomass_name: str = None) -> set:
     # account for deprecated nomenclature
     model_rxns = {rxn.id for rxn in model.reactions}
     ex_rxns = list(set(ex_rxns).intersection(model_rxns))
+
+    # use complete medium as diet
+    # NOTE: this step is not performed in MMT. MMT uses the bounds already present in the model.
+    # For many AGORA2 models, the lower bounds of the exchange reactions are -1000 already.
+    # MiGEMox sets the bounds in case the user is using custom  models where the bounds have not
+    # been set to -1000.
+    # for rxn_id in ex_rxns:
+    #     model.reactions.get_by_id(rxn_id).lower_bound = -1000
 
     # compute which exchanges can carry flux
     # to avoid bugs, do this with coupling constraints implemented

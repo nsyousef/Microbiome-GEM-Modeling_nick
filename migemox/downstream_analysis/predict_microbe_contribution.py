@@ -145,10 +145,6 @@ def _process_single_model(model_file: Path, diet_mod_dir: str, mets_list: Option
                     rxns.extend(iex_rxn_ids)
                     ex_rxn.lower_bound = orig_lb
         else:
-            print("mets list:")
-            print(mets_list)
-            print("model reactions:")
-            print(", ".join([rxn.id for rxn in model.reactions]))
             rxns_in_model = _get_exchange_reactions(model, mets_list, mets_as_iex=True)
             if not rxns_in_model:
                 logger.warning(f"No exchange reactions found in model {model_name}")
@@ -293,9 +289,6 @@ def predict_microbe_contributions(diet_mod_dir: str, res_path: Optional[str] = N
         # Process batch in parallel
         batch_results = _process_batch_parallel(current_batch, diet_mod_dir, mets_list, net_production_dict, solver, workers)
 
-        print("Batch Results:")
-        print(batch_results)
-
         for model_name, results in batch_results.items():
             if min_fluxes_df.empty:
                 reactions = list(results['rxns'])
@@ -317,11 +310,6 @@ def predict_microbe_contributions(diet_mod_dir: str, res_path: Optional[str] = N
                 min_fluxes_df.loc[rxn_id, model_name] = min_val
             for rxn_id, max_val in results['max_fluxes'].items():
                 max_fluxes_df.loc[rxn_id, model_name] = max_val
-
-            print("min_fluxes_df (in predict_microbe_contributions)")
-            print(min_fluxes_df)
-            print("max_fluxes_df (in predict_microbe_contributions)")
-            print(max_fluxes_df)
             
             # Save intermediate results
             min_fluxes_df.to_csv(res_path / 'minFluxes.csv')
@@ -330,13 +318,6 @@ def predict_microbe_contributions(diet_mod_dir: str, res_path: Optional[str] = N
             logger.info(f"Saved intermediate results after batch {batch_start//batch_size + 1}")
     
     flux_spans_df = _calculate_flux_spans(min_fluxes_df, max_fluxes_df)
-
-    print("min_fluxes_df (after flux spans)")
-    print(min_fluxes_df.head())
-    print("max_fluxes_df (after flux spans)")
-    print(max_fluxes_df.head())
-    print("flux_spans_df (after flux spans)")
-    print(flux_spans_df.head())
 
     min_fluxes_df, max_fluxes_df, flux_spans_df = _clean_and_filter_dataframes(min_fluxes_df, max_fluxes_df, flux_spans_df)
     

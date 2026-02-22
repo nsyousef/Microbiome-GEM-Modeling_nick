@@ -59,7 +59,7 @@ def run_single_fva(sample_name: str, ex_mets: list, model_dir: str, diet_constra
 
     try:
         if os.path.exists(os.path.join(diet_model_dir, f"{diet_model_name}.sbml")):
-            print(f"Diet-adapted model for {sample_name} already exists. Skipping steps 1-4, Running FVA directly.")
+            log_with_timestamp(f"Diet-adapted model for {sample_name} already exists. Skipping steps 1-4, Running FVA directly.")
             model, C, d, dsense, ctrs = load_model_and_constraints(
                 diet_model_name, diet_model_dir, model_type="standard", save_format="sbml")
             model_data = {
@@ -80,7 +80,7 @@ def run_single_fva(sample_name: str, ex_mets: list, model_dir: str, diet_constra
                 'dsense': dsense,
                 'ctrs': ctrs
             }
-            print(f"Processing {sample_name}: got model")
+            log_with_timestamp(f"Processing {sample_name}: got model")
             
             # Step 2: Apply dietary constraints
             model = _apply_dietary_constraints(model, sample_name, diet_constraints)
@@ -97,7 +97,7 @@ def run_single_fva(sample_name: str, ex_mets: list, model_dir: str, diet_constra
         return sample_name, net_production_samp, net_uptake_samp, min_net_fecal_excretion, raw_fva_results
         
     except Exception as e:
-        print(f"Error processing sample {sample_name}: {str(e)}")
+        log_with_timestamp(f"Error processing sample {sample_name}: {str(e)}")
         raise e
     
 def _apply_dietary_constraints(model: cobra.Model, sample_name: str, diet_constraints: pd.DataFrame) -> cobra.Model:
@@ -121,7 +121,7 @@ def _apply_dietary_constraints(model: cobra.Model, sample_name: str, diet_constr
             if pd.notnull(row['upper_bound']):
                 model.reactions.get_by_id(rxn).upper_bound = float(row['upper_bound'])
 
-    print(f"Processing {sample_name}: diet applied")
+    log_with_timestamp(f"Processing {sample_name}: diet applied")
     return model
 
 def _configure_physiological_bounds(model: cobra.Model, biomass_bounds: tuple, humanMets: dict, diet_constraints: pd.DataFrame) -> cobra.Model:
@@ -151,7 +151,7 @@ def _optimize_and_save_model(model: cobra.Model, model_data: dict, sample_name: 
     # Set objective to community biomass export & Optimize to ensure feasibility
     model.objective = 'EX_microbeBiomass[fe]'
     solution = model.optimize()
-    print(f"Processing {sample_name}: model optimized") if solution.status == 'optimal' else print(f"  ⚠️ Warning: Model optimization status: {solution.status}")
+    log_with_timestamp(f"Processing {sample_name}: model optimized") if solution.status == 'optimal' else log_with_timestamp(f"  ⚠️ Warning: Model optimization status: {solution.status}")
     
     # Save diet-adapted model
     diet_model_dir = os.path.join(results_path, 'Diet')
@@ -169,12 +169,12 @@ def _optimize_and_save_model(model: cobra.Model, model_data: dict, sample_name: 
         save_format="sbml"
     )
 
-    print(f"  Saved diet-adapted model")
+    log_with_timestamp(f"  Saved diet-adapted model")
     return model_name
 
 def _perform_fva(model: cobra.Model, exchanges: list, sample_name: str, model_data: dict) -> tuple:
     """Perform flux variability analysis and calculate net metabolite fluxes."""
-    print(f"  Starting FVA for {sample_name}")
+    log_with_timestamp(f"  Starting FVA for {sample_name}")
     
     # Get reaction indices for FVA
     # fecal_rxn_ids = [model.reactions.index(rxn) for rxn in model.exchanges]
@@ -189,39 +189,19 @@ def _perform_fva(model: cobra.Model, exchanges: list, sample_name: str, model_da
 
     model = apply_couple_constraints(model, model_data)
     fecal_rxn_list = [rxn for rxn in model.reactions if rxn.id.startswith('EX_')]
-    log_with_timestamp("fecal_rxn_list")
-    print(fecal_rxn_list[0:5])
+
     fecal_result = flux_variability_analysis(model, 
                                             # reaction_list=[rxn for rxn in model.exchanges],
                                             reaction_list=fecal_rxn_list,
                                             fraction_of_optimum=0.9999, processes=4)
     diet_rxn_list = [rxn for rxn in model.reactions if 'Diet_EX_' in rxn.id]
-    log_with_timestamp("diet_rxn_list")
-    print(diet_rxn_list[0:5])
+
     diet_result = flux_variability_analysis(model, 
                                             reaction_list=diet_rxn_list,
                                             fraction_of_optimum=0.9999, processes=4)
     
-    # print("fecal_result")
-    # print(fecal_result)
-
-    # print("diet_result")
-    # print(diet_result)
-    
     min_flux_fecal, max_flux_fecal = fecal_result['minimum'].to_dict(), fecal_result['maximum'].to_dict()
     min_flux_diet, max_flux_diet = diet_result['minimum'].to_dict(), diet_result['maximum'].to_dict()
-
-    # log_with_timestamp("min_flux_fecal:")
-    # print(min_flux_fecal)
-
-    # log_with_timestamp("max_flux_fecal:")
-    # print(max_flux_fecal)
-
-    # log_with_timestamp("min_flu_diet:")
-    # print(min_flux_diet)
-
-    # log_with_timestamp("max_flux_diet")
-    # print(max_flux_diet)
 
     # Calculate net production and uptake
     net_production_samp, net_uptake_samp, min_net_fecal_excretion, raw_fva_results = {}, {}, {}, {}
@@ -231,30 +211,13 @@ def _perform_fva(model: cobra.Model, exchanges: list, sample_name: str, model_da
     fecal_rxns = [r.id for r in model.reactions if r.id.startswith('EX_')]
     exchanges = set(fecal_rxns).intersection(set(exchanges))
 
-    # log_with_timestamp("fecal_rxns")
-    # print(fecal_rxns)
-    # log_with_timestamp("exchanges")
-    # print(exchanges)
-
     # cut off very small values below solver sensitivity
-    log_with_timestamp("Cutting off small values")
     tol = 1e-07
     for rxn in exchanges:
-        # print(f"rxn: {rxn}")
         fecal_var = rxn
         diet_var = rxn.replace('EX_', 'Diet_EX_').replace('[fe]', '[d]')
 
         # if abs(max_flux_fecal.get(fecal_var, 0)) < tol: max_flux_fecal.get(fecal_var, 0) == 0
-        
-        # print("max flux fecal:")
-        # print(max_flux_fecal.get(fecal_var, None))
-        # print("min flux fecal:")
-        # print(min_flux_fecal.get(fecal_var, None))
-
-        # print("max flux diet:")
-        # print(max_flux_diet.get(diet_var, None))
-        # print("min flux diet:")
-        # print(min_flux_diet.get(diet_var, None))
 
         # Safely clamp tiny max_flux_fecal values to 0 (only if key exists)
         if fecal_var in max_flux_fecal and abs(max_flux_fecal[fecal_var]) < tol:
@@ -274,7 +237,7 @@ def _perform_fva(model: cobra.Model, exchanges: list, sample_name: str, model_da
             'max_flux_fecal': max_flux_fecal.get(fecal_var, 0)
         }
     
-    print(f"  Completed FVA analysis for {sample_name}")
+    log_with_timestamp(f"  Completed FVA analysis for {sample_name}")
     return net_production_samp, net_uptake_samp, min_net_fecal_excretion, raw_fva_results
 
 def run_community_fva(
@@ -311,7 +274,7 @@ def run_community_fva(
     # Adapt diet
     diet_constraints = adapt_vmh_diet_to_agora(diet_file, setup_type='Microbiota')
 
-    print("Got constraints, starting parallel processing")
+    log_with_timestamp("Got constraints, starting parallel processing")
 
     # Use ProcessPoolExecutor for parallel processing
     with ProcessPoolExecutor(max_workers=workers) as executor:
@@ -335,9 +298,9 @@ def run_community_fva(
                 raw_fva_results[sample_name] = raw_fva
                 
             except Exception as e:
-                print(f"Sample {sample_name} failed with error: {e}")
+                log_with_timestamp(f"Sample {sample_name} failed with error: {e}")
                 # Continue processing other samples
                 continue
 
-    print("All samples processed successfully")
+    log_with_timestamp("All samples processed successfully")
     return exchanges, net_production, net_uptake, min_net_fecal_excretion, raw_fva_results
