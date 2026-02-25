@@ -73,7 +73,7 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
     # 3. Simulate Microbiota Models
     exchanges, net_production, net_uptake, min_net_fecal_excretion, raw_fva_results = run_community_fva(
         sample_names=clean_samp_names,
-        ex_mets=ex_mets,
+        ex_mets=active_ex_mets,
         model_dir=f'{res_filepath}/Personalized_Models',
         diet_file=diet_filepath,
         res_path=res_filepath,
