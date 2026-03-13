@@ -16,16 +16,21 @@ from migemox.pipeline.io_utils import load_model_and_constraints
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+    
+def _get_sample_id_from_model_name(model_name: str) -> str:
+    """
+    Extract the original sample ID from a diet-adapted model filename.
 
-def _load_model_safely(model_path: str) -> Optional[object]:
-    """Handle model loading with fallbacks"""
-    try:
-        model = load_matlab_model(model_path)
-        logger.debug(f"Successfully loaded model: {Path(model_path).stem}")
-        return model
-    except Exception as e:
-        logger.error(f"Failed to load model {Path(model_path).stem}: {str(e)}")
-        return None
+    Expected pattern: 'microbiota_model_diet_<sample_name>'.
+    Raises if the pattern does not match.
+    """
+    prefix = "microbiota_model_diet_"
+    if not model_name.startswith(prefix):
+        raise ValueError(
+            f"Model name '{model_name}' does not follow expected pattern "
+            f"'{prefix}<sample_name>'."
+        )
+    return model_name[len(prefix):]
     
 def _get_exchange_reactions(model: object, mets_list: Optional[List[str]] = None, mets_as_iex=False) -> List[str]:
     """
@@ -80,14 +85,56 @@ def _perform_fva(model: object, rxns_in_model: List[str], solver: str) -> Tuple[
                 max_fluxes[rxn_id] = 0
         
         return min_fluxes, max_fluxes
+    
+def _min_max_flux_per_reaction(model: object, rxn_ids: List[str]) -> Tuple[Dict[str, float], Dict[str, float]]:
+    """Compute min/max flux for each reaction in rxn_ids without imposing
+    a fraction-of-optimum constraint on the existing model objective.
+    Raises on infeasibilities."""
+    min_fluxes, max_fluxes = {}, {}
+    original_objective = model.objective
+    try:
+        for rxn_id in rxn_ids:
+            model.objective = rxn_id
 
-def _process_batch_parallel(current_batch: List[Path], diet_mod_dir: str, mets_list: Optional[List[str]], 
-                           net_production_dict: Optional[Dict[str, Dict[str, float]]], solver: str, workers: int) -> Dict:
+            sol_min = model.optimize(objective_sense='minimize')
+            if sol_min.status != 'optimal':
+                raise RuntimeError(f"Minimization infeasible or non-optimal for reaction {rxn_id}: status {sol_min.status}")
+            min_fluxes[rxn_id] = sol_min.objective_value
+
+            sol_max = model.optimize(objective_sense='maximize')
+            if sol_max.status != 'optimal':
+                raise RuntimeError(f"Maximization infeasible or non-optimal for reaction {rxn_id}: status {sol_max.status}")
+            max_fluxes[rxn_id] = sol_max.objective_value
+    finally:
+        model.objective = original_objective
+    return min_fluxes, max_fluxes
+
+def _process_batch_parallel(
+    current_batch: List[Path],
+    diet_mod_dir: str,
+    mets_list: Optional[List[str]], 
+    net_production_dict: Optional[Dict[str, Dict[str, float]]],
+    solver: str,
+    workers: int,
+    method: str,
+    raw_fva_df: Optional[pd.DataFrame],
+    net_secretion_df: Optional[pd.DataFrame],
+) -> Dict:
     """Process batch of models in parallel"""
     batch_results = {}
     with ProcessPoolExecutor(max_workers=workers) as executor:
         futures = [
-            executor.submit(_process_single_model, model_file, diet_mod_dir, mets_list, net_production_dict, solver)
+            executor.submit(
+                _process_single_model,
+                model_file,
+                diet_mod_dir,
+                mets_list,
+                net_production_dict,
+                solver,
+                method,
+                raw_fva_df if method == "fecal_max" else None,
+                net_secretion_df if method == "net_secretion" else None,
+            )
             for model_file in current_batch
         ]
     
@@ -103,8 +150,16 @@ def _process_batch_parallel(current_batch: List[Path], diet_mod_dir: str, mets_l
     
     return batch_results
 
-def _process_single_model(model_file: Path, diet_mod_dir: str, mets_list: Optional[List[str]], 
-                         net_production_dict: Optional[Dict[str, Dict[str, float]]], solver: str) -> Optional[Dict]:
+def _process_single_model(
+    model_file: Path,
+    diet_mod_dir: str,
+    mets_list: Optional[List[str]], 
+    net_production_dict: Optional[Dict[str, Dict[str, float]]],
+    solver: str,
+    method: str,
+    raw_fva_df: Optional[pd.DataFrame],
+    net_secretion_df: Optional[pd.DataFrame],
+) -> Optional[Dict]:
     """
     Process a single model file
     
@@ -128,29 +183,184 @@ def _process_single_model(model_file: Path, diet_mod_dir: str, mets_list: Option
             
         min_fluxes, max_fluxes, rxns = {}, {}, []
         
-        if net_production_dict:
-            # Only process mets with a constraint for this model
-            for met, model_fluxes in tqdm(net_production_dict.items()):
-                ex_rxn_id = f"EX_{met}[fe]"
-                iex_rxn_ids = _get_exchange_reactions(model, [met])
-                # Set EX lower bound temporarily
-                if ex_rxn_id in model.reactions and iex_rxn_ids:
-                    ex_rxn = model.reactions.get_by_id(ex_rxn_id)
-                    orig_lb = ex_rxn.lower_bound
-                    ex_rxn.lower_bound = model_fluxes[model_name.split('_')[-1]]
-                    # Perform FVA on only IEX rxns associated with current metabolite
-                    minf, maxf = _perform_fva(model, iex_rxn_ids, solver)
+        if method == "biomass":
+            if net_production_dict:
+                # Only process mets with a constraint for this model
+                sample_id = _get_sample_id_from_model_name(model_name)
+
+                for met, model_fluxes in tqdm(net_production_dict.items()):
+                    ex_rxn_id = f"EX_{met}[fe]"
+                    iex_rxn_ids = _get_exchange_reactions(model, [met])
+                    # Set EX lower bound temporarily
+                    if ex_rxn_id in model.reactions and iex_rxn_ids:
+                        ex_rxn = model.reactions.get_by_id(ex_rxn_id)
+                        orig_lb = ex_rxn.lower_bound
+
+                        # OLD: ex_rxn.lower_bound = model_fluxes[model_name.split('_')[-1]]
+                        ex_rxn.lower_bound = model_fluxes[sample_id]
+
+                         # Perform FVA on only IEX rxns associated with current metabolite
+                        minf, maxf = _perform_fva(model, iex_rxn_ids, solver)
+                        min_fluxes.update(minf)
+                        max_fluxes.update(maxf)
+                        rxns.extend(iex_rxn_ids)
+                        ex_rxn.lower_bound = orig_lb
+            else:
+                rxns_in_model = _get_exchange_reactions(model, mets_list, mets_as_iex=True)
+                if not rxns_in_model:
+                    logger.warning(f"No exchange reactions found in model {model_name}")
+                    return None
+                min_fluxes, max_fluxes = _perform_fva(model, rxns_in_model, solver)
+                rxns = rxns_in_model
+
+        elif method == "fecal_max":
+            if mets_list is None:
+                raise ValueError("mets_list must be provided when method='fecal_max'.")
+            if raw_fva_df is None:
+                raise ValueError("raw_fva_df must be provided when method='fecal_max'.")
+
+            # Basic structural check on raw_fva_df
+            if not isinstance(raw_fva_df.index, pd.MultiIndex) or raw_fva_df.index.names != ['Sample', 'Reaction']:
+                raise ValueError(
+                    "raw_fva_df must have a MultiIndex with levels ['Sample', 'Reaction'] as built in run_community_fva."
+                )
+            if 'max_flux_fecal' not in raw_fva_df.columns:
+                raise ValueError(
+                    "raw_fva_df must contain a 'max_flux_fecal' column."
+                )
+
+            # Sample ID convention: microbiota_model_diet_<sample_name>
+            sample_id = _get_sample_id_from_model_name(model_name)
+
+            if sample_id not in raw_fva_df.index.get_level_values('Sample'):
+                raise KeyError(
+                    f"Sample ID '{sample_id}' not found in raw_fva_df index."
+                )
+
+            for iex_pattern in mets_list:
+                # iex_pattern is like "IEX_glu_D[u]tr" (from predict_microbe_contributions)
+                if not iex_pattern.startswith("IEX_") or not iex_pattern.endswith("[u]tr"):
+                    raise ValueError(f"Unexpected IEX metabolite format: {iex_pattern}")
+                met_id = iex_pattern[len("IEX_"):-len("[u]tr")]
+
+                ex_rxn_id = f"EX_{met_id}[fe]"
+                if ex_rxn_id not in model.reactions:
+                    raise RuntimeError(
+                        f"Fecal exchange reaction {ex_rxn_id} not found in model {model_name}."
+                    )
+
+                # Lookup max fecal flux from raw_fva_df
+                try:
+                    row = raw_fva_df.loc[(sample_id, ex_rxn_id)]
+                except KeyError:
+                    raise RuntimeError(
+                        f"FVA results for sample '{sample_id}', reaction '{ex_rxn_id}' "
+                        f"not found in raw_fva_df."
+                    )
+
+                fecal_max = float(row['max_flux_fecal'])
+                if fecal_max <= 1e-10:
+                    raise RuntimeError(
+                        f"Maximal fecal secretion for {ex_rxn_id} in sample {sample_id} "
+                        f"is non-positive ({fecal_max}); cannot apply 'fecal_max' method."
+                    )
+
+                ex_rxn = model.reactions.get_by_id(ex_rxn_id)
+                orig_lb, orig_ub = ex_rxn.lower_bound, ex_rxn.upper_bound
+
+                # Constrain fecal exchange to 99% of this precomputed maximum
+                new_lb = max(orig_lb, 0.99 * fecal_max)
+                if new_lb > orig_ub + 1e-10:
+                    raise RuntimeError(
+                        f"Inconsistent bounds for {ex_rxn_id} after applying 0.99*fecal_max "
+                        f"in model {model_name} (new_lb={new_lb}, orig_ub={orig_ub})."
+                    )
+                ex_rxn.lower_bound = new_lb
+
+                try:
+                    # Collect IEX reactions for this metabolite
+                    # Naming convention: f"{microbe_name}_IEX_{met_id}tr"
+                    pattern = f"_IEX_{met_id}tr"
+                    iex_rxn_ids = [rxn.id for rxn in model.reactions if pattern in rxn.id]
+                    if not iex_rxn_ids:
+                        raise RuntimeError(
+                            f"No IEX reactions found for metabolite {met_id} in model {model_name}."
+                        )
+
+                    # Use your per-reaction min/max helper (no fraction_of_optimum FVA here)
+                    minf, maxf = _min_max_flux_per_reaction(model, iex_rxn_ids)
                     min_fluxes.update(minf)
                     max_fluxes.update(maxf)
                     rxns.extend(iex_rxn_ids)
+                finally:
+                    # Restore original bounds
                     ex_rxn.lower_bound = orig_lb
-        else:
-            rxns_in_model = _get_exchange_reactions(model, mets_list, mets_as_iex=True)
-            if not rxns_in_model:
-                logger.warning(f"No exchange reactions found in model {model_name}")
-                return None
-            min_fluxes, max_fluxes = _perform_fva(model, rxns_in_model, solver)
-            rxns = rxns_in_model
+                    ex_rxn.upper_bound = orig_ub
+
+        elif method == "net_secretion":
+            if mets_list is None:
+                raise ValueError("mets_list must be provided when method='net_secretion'.")
+            if net_secretion_df is None:
+                raise ValueError("net_secretion_df must be provided when method='net_secretion'.")
+
+            # Sample ID is assumed to be the suffix after the last underscore in the model name,
+            # same convention as net_production_dict branch.
+            sample_id = _get_sample_id_from_model_name(model_name)
+            if sample_id not in net_secretion_df.columns:
+                raise KeyError(f"Sample ID '{sample_id}' not found in net_secretion_df columns.")
+
+            for iex_pattern in mets_list:
+                if not iex_pattern.startswith("IEX_") or not iex_pattern.endswith("[u]tr"):
+                    raise ValueError(f"Unexpected IEX metabolite format: {iex_pattern}")
+                met_id = iex_pattern[len("IEX_"):-len("[u]tr")]
+
+                fecal_ex_rxn_id = f"EX_{met_id}[fe]"
+                diet_ex_rxn_id = f"EX_{met_id}[d]"
+
+                if fecal_ex_rxn_id not in model.reactions:
+                    raise RuntimeError(f"Fecal exchange reaction {fecal_ex_rxn_id} not found in model {model_name}.")
+                if diet_ex_rxn_id not in model.reactions:
+                    raise RuntimeError(f"Diet exchange reaction {diet_ex_rxn_id} not found in model {model_name}.")
+
+                fecal_rxn = model.reactions.get_by_id(fecal_ex_rxn_id)
+                diet_rxn = model.reactions.get_by_id(diet_ex_rxn_id)
+
+                if fecal_ex_rxn_id not in net_secretion_df.index:
+                    raise KeyError(
+                        f"Fecal exchange reaction {fecal_ex_rxn_id} not found in net_secretion_df index."
+                    )
+
+                net_secretion = float(net_secretion_df.loc[fecal_ex_rxn_id, sample_id])
+                if net_secretion <= 1e-10:
+                    raise RuntimeError(
+                        f"Predicted net fecal secretion for {fecal_ex_rxn_id} in sample {sample_id} "
+                        f"is non-positive ({net_secretion}); cannot apply 'net_secretion' method."
+                    )
+
+                # Add linear constraint: v_diet + v_fecal <= 0.99 * net_secretion
+                # Use the solver interface provided by cobrapy
+                interface = model.solver.interface
+                expr = diet_rxn.flux_expression + fecal_rxn.flux_expression
+                constr_name = f"net_secretion_{met_id}_{sample_id}"
+                net_constr = interface.Constraint(expr, ub=0.99 * net_secretion, name=constr_name)
+
+                model.add_cons_vars([net_constr])
+
+                try:
+                    pattern = f"_IEX_{met_id}tr"
+                    iex_rxn_ids = [rxn.id for rxn in model.reactions if pattern in rxn.id]
+                    if not iex_rxn_ids:
+                        raise RuntimeError(
+                            f"No IEX reactions found for metabolite {met_id} in model {model_name}."
+                        )
+
+                    minf, maxf = _min_max_flux_per_reaction(model, iex_rxn_ids)
+                    min_fluxes.update(minf)
+                    max_fluxes.update(maxf)
+                    rxns.extend(iex_rxn_ids)
+                finally:
+                    # remove the constraint
+                    model.remove_cons_vars([net_constr])
         
         return {
             'model_name': model_name,
@@ -161,6 +371,9 @@ def _process_single_model(model_file: Path, diet_mod_dir: str, mets_list: Option
         
     except Exception as e:
         logger.error(f"Failed to process model {model_name}: {str(e)}")
+        if method in {"fecal_max", "net_secretion"}:
+            # Propagate error so the whole run fails visibly
+            raise
         return None
 
 def _calculate_flux_spans(min_df: pd.DataFrame, max_df: pd.DataFrame) -> pd.DataFrame:
@@ -207,10 +420,17 @@ def _clean_and_filter_dataframes(min_df: pd.DataFrame, max_df: pd.DataFrame,
     return min_df_filtered, max_df_filtered, flux_spans_filtered
 
 
-def predict_microbe_contributions(diet_mod_dir: str, res_path: Optional[str] = None, 
-                                  mets_list: Optional[List[str]] = None, net_production_dict: Optional[Dict[str, Dict[str, float]]] = None,
-                                  solver: str = 'cplex',
-                                  workers: int = 1) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def predict_microbe_contributions(
+    diet_mod_dir: str,
+    res_path: Optional[str] = None, 
+    mets_list: Optional[List[str]] = None,
+    net_production_dict: Optional[Dict[str, Dict[str, float]]] = None,
+    solver: str = 'cplex',
+    workers: int = 1,
+    method: str = "biomass",
+    raw_fva_df: Optional[pd.DataFrame] = None,
+    net_secretion_df: Optional[pd.DataFrame] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     '''
     Predicts the minimal and maximal fluxes through internal exchange
     reactions in microbes in a list of microbiome community models for a list
@@ -228,6 +448,10 @@ def predict_microbe_contributions(diet_mod_dir: str, res_path: Optional[str] = N
                              temporarily set to the net production rate for each metabolite
         solver: Solver to use for solving FVA
         workers: Number of processes to use for parallelization
+        method: "biomass" (default), "fecal_max", or "net_secretion".
+        raw_fa_df: only required/used for method="fecal_max". Ignored otherwise. The DataFrame of raw
+        FVA results (must contain the fecal max)
+        net_secretion_df: only required/used for method="net_secretion". Ignored otherwise.
 
     Returns:
         minFluxes:  Minimal fluxes through analyzed exchange reactions,
@@ -237,6 +461,16 @@ def predict_microbe_contributions(diet_mod_dir: str, res_path: Optional[str] = N
         fluxSpans:  Range between min and max fluxes for analyzed
                     exchange reactions
     '''    
+
+    if method not in {"biomass", "fecal_max", "net_secretion"}:
+        raise ValueError(f"Unknown method '{method}'. "
+                        "Expected 'biomass', 'fecal_max', or 'net_secretion'.")
+    if method in {"fecal_max", "net_secretion"} and mets_list is None:
+        raise ValueError(f"mets_list must be provided when method='{method}'.")
+    if method == "net_secretion" and net_secretion_df is None:
+        raise ValueError("net_secretion_df must be provided when method='net_secretion'.")
+    if method == "fecal_max" and raw_fva_df is None:
+        raise ValueError("raw_fva_df must be provided when method='fecal_max'.")
 
     res_path = Path.cwd() / 'Contributions' if not res_path else Path(res_path)
     os.makedirs(res_path, exist_ok=True)
@@ -287,7 +521,11 @@ def predict_microbe_contributions(diet_mod_dir: str, res_path: Optional[str] = N
                    f"models {batch_start + 1}-{batch_end} of {len(remaining_models)}")
         
         # Process batch in parallel
-        batch_results = _process_batch_parallel(current_batch, diet_mod_dir, mets_list, net_production_dict, solver, workers)
+        batch_results = _process_batch_parallel(
+            current_batch, diet_mod_dir, mets_list,
+            net_production_dict, solver, workers,
+            method, raw_fva_df, net_secretion_df
+        )
 
         for model_name, results in batch_results.items():
             if min_fluxes_df.empty:

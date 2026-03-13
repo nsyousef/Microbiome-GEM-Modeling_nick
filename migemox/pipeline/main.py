@@ -25,20 +25,22 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
                          res_filepath: str = 'Results', workers: int = 1, solver: str = 'cplex',
                          biomass_bounds: tuple = (0.4, 1.0), contr_filepath: str = 'Contributions',
                          analyze_contributions: bool = False, fresh_start: bool = False,
-                         use_net_production_dict: bool = False):
+                         use_net_production_dict: bool = False,
+                         method="biomass"):
     """
     Main function to run the MiGEMox pipeline.
 
     Args:
-        abun_filepath: Path to the abundance CSV file (MUST be normalized before running MiGEMox).
+        abun_filepath: Path to the abundance CSV file (MUST be normalized before running MiGEMox; 
+        must also have the column for species names have a header of "X").
         mod_filepath: Path to the directory containing organism model files (.mat).
-        res_filepath: Base directory for saving output models and results.
-        contr_filepath: Directory for saving strain contribution analysis results.
-                          If None, default is 'Contributions'
         diet_filepath: Path to the VMH diet file.
+        res_filepath: Base directory for saving output models and results.
         workers: Number of parallel workers to use for sample processing.
         solver: Optimization solver to use (e.g., 'cplex', 'gurobi').
         biomass_bounds: Tuple (lower, upper) for community biomass reaction.
+        contr_filepath: Directory for saving strain contribution analysis results.
+                          If None, default is 'Contributions'
         analyze_contributions: Boolean, whether to run strain contribution analysis.
     """
     log_with_timestamp(f"--- MiGEMox Pipeline Started at {datetime.now(tz=timezone.utc)} ---")
@@ -115,7 +117,10 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
             res_path=contr_filepath,
             mets_list=mets,
             solver=solver,
-            workers=workers
+            workers=workers,
+            method=method,
+            raw_fva_df=raw_fva_df,
+            net_secretion_df=net_secretion_df,
         )
         if use_net_production_dict: kwargs['net_production_dict'] = pos_net_prod
         min_fluxes_df, max_fluxes_df, flux_spans_df = predict_microbe_contributions(**kwargs)
