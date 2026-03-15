@@ -337,12 +337,12 @@ def _process_single_model(
                         f"is non-positive ({net_secretion}); cannot apply 'net_secretion' method."
                     )
 
-                # Add linear constraint: v_diet + v_fecal <= 0.99 * net_secretion
+                # Add linear constraint: v_diet + v_fecal >= 0.99 * net_secretion
                 # Use the solver interface provided by cobrapy
                 interface = model.solver.interface
                 expr = diet_rxn.flux_expression + fecal_rxn.flux_expression
                 constr_name = f"net_secretion_{met_id}_{sample_id}"
-                net_constr = interface.Constraint(expr, ub=0.99 * net_secretion, name=constr_name)
+                net_constr = interface.Constraint(expr, lb=0.99 * net_secretion, name=constr_name)
 
                 model.add_cons_vars([net_constr])
 

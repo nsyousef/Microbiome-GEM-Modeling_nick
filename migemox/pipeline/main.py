@@ -42,6 +42,19 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
         contr_filepath: Directory for saving strain contribution analysis results.
                           If None, default is 'Contributions'
         analyze_contributions: Boolean, whether to run strain contribution analysis.
+        fresh_start: If True, reruns the pipeline from scratch. If False, reuses any checkpoints that
+        have been precomputed.
+        use_net_production_dict: Fix fecal exchange reaction to 99% of its optimum, and fix biomass
+        reaction to its net production flux and run FVA on IEX reactions under these constraints. (This
+        version was already implemented when I, Nick Yousefi, first started working on MiGEMox).
+        method: The method to use for predicting microbe secretions. Default ('biomass') is to constrain the
+        biomass reaction to at least 99% of its max and run FVA on IEX reactions of metabolites with
+        a positive net secretion. The alternatives are:
+        * `'fecal_max'`: Constrain the fecal exchange reaction for the reaction of interest to be at least
+        the flux predicted in the raw fecal secretions. Then run FVA on IEX reactions of interest.
+        * `'net_secretion'`: Constrain the net secretion flux (`v_diet + v_fecal`) to be at least 99% of
+        the net secretion flux from the initial simulations (i.e., `v_diet + v_fecal >= 0.99 * net_secretion`).
+        Then run FVA on IEX reactions of interest.
     """
     log_with_timestamp(f"--- MiGEMox Pipeline Started at {datetime.now(tz=timezone.utc)} ---")
     log_with_timestamp(f"Current memory usage: {print_memory_usage()}")
