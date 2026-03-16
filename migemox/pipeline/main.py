@@ -26,7 +26,8 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
                          biomass_bounds: tuple = (0.4, 1.0), contr_filepath: str = 'Contributions',
                          analyze_contributions: bool = False, fresh_start: bool = False,
                          use_net_production_dict: bool = False,
-                         method="biomass"):
+                         method: str="biomass",
+                         precision: str | None=None):
     """
     Main function to run the MiGEMox pipeline.
 
@@ -55,6 +56,9 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
         * `'net_secretion'`: Constrain the net secretion flux (`v_diet + v_fecal`) to be at least 99% of
         the net secretion flux from the initial simulations (i.e., `v_diet + v_fecal >= 0.99 * net_secretion`).
         Then run FVA on IEX reactions of interest.
+        precision: A format specifier such as ':.2f', ':.3g', '.2f', '.3g', etc. Used when calculating
+        the flux spans to round the min and max fluxes to a certain number of decimal points or sig figs
+        (when predicting microbe contributions).
     """
     log_with_timestamp(f"--- MiGEMox Pipeline Started at {datetime.now(tz=timezone.utc)} ---")
     log_with_timestamp(f"Current memory usage: {print_memory_usage()}")
@@ -134,6 +138,7 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
             method=method,
             raw_fva_df=raw_fva_df,
             net_secretion_df=net_secretion_df,
+            precision=precision,
         )
         if use_net_production_dict: kwargs['net_production_dict'] = pos_net_prod
         min_fluxes_df, max_fluxes_df, flux_spans_df = predict_microbe_contributions(**kwargs)

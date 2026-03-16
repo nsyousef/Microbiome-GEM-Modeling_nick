@@ -13,6 +13,7 @@ from glob import glob
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
 from migemox.pipeline.io_utils import load_model_and_constraints
+import math
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -375,9 +376,47 @@ def _process_single_model(
             # Propagate error so the whole run fails visibly
             raise
         return None
+    
+def _round_df_with_format(df: pd.DataFrame, fmt: str) -> pd.DataFrame:
+    """
+    Round all float values in a DataFrame using a Python format spec, e.g. ':.2f' or ':.3g'.
 
-def _calculate_flux_spans(min_df: pd.DataFrame, max_df: pd.DataFrame) -> pd.DataFrame:
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame containing float values (NaNs allowed).
+    fmt : str
+        A format specifier such as ':.2f', ':.3g', '.2f', '.3g', etc.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with values rounded according to the given format.
+    """
+    # Allow either ':.2f' or '.2f'
+    if fmt.startswith(':'):
+        fmt = fmt[1:]  # strip leading ':'
+
+    def _round_value(x):
+        # Leave NaNs as-is
+        if x is None or (isinstance(x, float) and math.isnan(x)):
+            return x
+        # Format then cast back to float
+        return float(format(x, fmt))
+
+    # Apply elementwise
+    rounded = df.applymap(_round_value)
+
+    return rounded
+
+def _calculate_flux_spans(min_df: pd.DataFrame, max_df: pd.DataFrame, precision: str=None) -> pd.DataFrame:
     """Calculate flux spans with proper handling of positive/negative fluxes"""
+
+    # If the user specifies a precision to use, truncate the numbers to use that precision
+    if precision is not None:
+        min_df = _round_df_with_format(min_df, precision)
+        max_df = _round_df_with_format(max_df, precision)
+
     min_vals = min_df.values
     max_vals = max_df.values
     
@@ -430,6 +469,7 @@ def predict_microbe_contributions(
     method: str = "biomass",
     raw_fva_df: Optional[pd.DataFrame] = None,
     net_secretion_df: Optional[pd.DataFrame] = None,
+    precision: str = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     '''
     Predicts the minimal and maximal fluxes through internal exchange
@@ -452,6 +492,8 @@ def predict_microbe_contributions(
         raw_fa_df: only required/used for method="fecal_max". Ignored otherwise. The DataFrame of raw
         FVA results (must contain the fecal max)
         net_secretion_df: only required/used for method="net_secretion". Ignored otherwise.
+        precision: A format specifier such as ':.2f', ':.3g', '.2f', '.3g', etc. Used when calculating
+        the flux spans to round the min and max fluxes to a certain number of decimal points or sig figs.
 
     Returns:
         minFluxes:  Minimal fluxes through analyzed exchange reactions,
@@ -555,7 +597,7 @@ def predict_microbe_contributions(
             
             logger.info(f"Saved intermediate results after batch {batch_start//batch_size + 1}")
     
-    flux_spans_df = _calculate_flux_spans(min_fluxes_df, max_fluxes_df)
+    flux_spans_df = _calculate_flux_spans(min_fluxes_df, max_fluxes_df, precision)
 
     min_fluxes_df, max_fluxes_df, flux_spans_df = _clean_and_filter_dataframes(min_fluxes_df, max_fluxes_df, flux_spans_df)
     
