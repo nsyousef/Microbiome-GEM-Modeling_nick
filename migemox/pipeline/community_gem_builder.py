@@ -555,6 +555,7 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
     save_path = os.path.join(out_dir, f"microbiota_model_samp_{sample_name}.sbml")
     if os.path.exists(save_path):
         print(f"Personalized Model for {sample_name} already exists. Skipping.")
+        return
     print(f"{datetime.now(tz=timezone.utc)}: Personalized model for {sample_name} does not exist.")
     print(f"{datetime.now(tz=timezone.utc)}: Loading global model from {global_model_dir}")
     model, global_C, global_d, global_dsense, global_ctrs = load_model_and_constraints(
