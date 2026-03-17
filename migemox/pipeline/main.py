@@ -19,7 +19,6 @@ from migemox.pipeline.io_utils import collect_flux_profiles, extract_positive_ne
 from migemox.downstream_analysis.predict_microbe_contribution import predict_microbe_contributions
 from datetime import datetime, timezone
 from migemox.pipeline.io_utils import print_memory_usage
-import json
 
 def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: str,
                          res_filepath: str = 'Results', workers: int = 1, solver: str = 'cplex',
@@ -66,25 +65,13 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
         shutil.rmtree(res_filepath)
         log_with_timestamp("Output directory cleared for fresh start.")
 
-    clean_samp_names, organisms, ex_mets, active_ex_mets, global_rxn_ids = community_gem_builder(
+    clean_samp_names, organisms, ex_mets, active_ex_mets = community_gem_builder(
         abun_filepath=abun_filepath,
         mod_filepath=mod_filepath,
         out_dir=f'{res_filepath}/Personalized_Models',
         workers=workers
     )
 
-    log_with_timestamp("Writing ex_mets to file:")
-    ex_mets_path = os.path.join(res_filepath, 'ex_mets.json')
-    with open(ex_mets_path, 'w') as f:
-        json.dump(ex_mets, f)
-    log_with_timestamp(f"Written to: {ex_mets_path}")
-
-    log_with_timestamp("Writing active_ex_mets to file:")
-    active_ex_mets_path = os.path.join(res_filepath, 'active_ex_mets.json')
-    with open(active_ex_mets_path, 'w') as f:
-        json.dump(active_ex_mets, f)
-    log_with_timestamp(f"Written to: {active_ex_mets_path}")
-    
     # 2. Adapt Diet
     log_with_timestamp(f"--- Stage 1 Finished at {datetime.now(tz=timezone.utc)} ---")
     log_with_timestamp("\n--- Stage 2: Adapting Diet and Running Simulations ---")
