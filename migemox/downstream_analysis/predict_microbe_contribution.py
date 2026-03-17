@@ -6,7 +6,7 @@ import cplex
 from pathlib import Path
 from cobra.io import load_matlab_model
 from cobra.flux_analysis.variability import flux_variability_analysis
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Tuple, Dict, Literal
 import logging
 from migemox.pipeline.constraints import apply_couple_constraints
 from glob import glob
@@ -87,7 +87,7 @@ def _perform_fva(model: object, rxns_in_model: List[str], solver: str) -> Tuple[
         
         return min_fluxes, max_fluxes
     
-def _min_max_flux_per_reaction(model: object, rxn_ids: List[str]) -> Tuple[Dict[str, float], Dict[str, float]]:
+def _min_max_flux_per_reaction(model: object, rxn_ids: List[str], infeasible: Literal['raise', 'warn']='raise') -> Tuple[Dict[str, float], Dict[str, float]]:
     """Compute min/max flux for each reaction in rxn_ids without imposing
     a fraction-of-optimum constraint on the existing model objective.
     Raises on infeasibilities."""
@@ -99,13 +99,23 @@ def _min_max_flux_per_reaction(model: object, rxn_ids: List[str]) -> Tuple[Dict[
 
             sol_min = model.optimize(objective_sense='minimize')
             if sol_min.status != 'optimal':
-                raise RuntimeError(f"Minimization infeasible or non-optimal for reaction {rxn_id}: status {sol_min.status}")
-            min_fluxes[rxn_id] = sol_min.objective_value
+                if infeasible == 'raise':
+                    raise RuntimeError(f"Minimization infeasible or non-optimal for reaction {rxn_id}: status {sol_min.status}")
+                elif infeasible == 'warn':
+                    min_fluxes[rxn_id] = 0
+                    print(f"WARNING: solver status was {sol_min.status} for rxn_id {rxn_id} in model {model.name}")
+            else:
+                min_fluxes[rxn_id] = sol_min.objective_value
 
             sol_max = model.optimize(objective_sense='maximize')
             if sol_max.status != 'optimal':
-                raise RuntimeError(f"Maximization infeasible or non-optimal for reaction {rxn_id}: status {sol_max.status}")
-            max_fluxes[rxn_id] = sol_max.objective_value
+                if infeasible == 'raise':
+                    raise RuntimeError(f"Maximization infeasible or non-optimal for reaction {rxn_id}: status {sol_max.status}")
+                elif infeasible == 'warn':
+                    max_fluxes[rxn_id] = 0
+                    print(f"WARNING: solver status was {sol_max.status} for rxn_id {rxn_id} in model {model.name}")
+            else:
+                max_fluxes[rxn_id] = sol_max.objective_value
     finally:
         model.objective = original_objective
     return min_fluxes, max_fluxes
@@ -289,7 +299,7 @@ def _process_single_model(
                         )
 
                     # Use your per-reaction min/max helper (no fraction_of_optimum FVA here)
-                    minf, maxf = _min_max_flux_per_reaction(model, iex_rxn_ids)
+                    minf, maxf = _min_max_flux_per_reaction(model, iex_rxn_ids, infeasible='warn')
                     min_fluxes.update(minf)
                     max_fluxes.update(maxf)
                     rxns.extend(iex_rxn_ids)
@@ -355,7 +365,7 @@ def _process_single_model(
                             f"No IEX reactions found for metabolite {met_id} in model {model_name}."
                         )
 
-                    minf, maxf = _min_max_flux_per_reaction(model, iex_rxn_ids)
+                    minf, maxf = _min_max_flux_per_reaction(model, iex_rxn_ids, infeasible='warn')
                     min_fluxes.update(minf)
                     max_fluxes.update(maxf)
                     rxns.extend(iex_rxn_ids)
