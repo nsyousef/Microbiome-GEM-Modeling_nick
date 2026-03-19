@@ -12,7 +12,7 @@ from migemox.pipeline.constraints import apply_couple_constraints
 from glob import glob
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
-from migemox.pipeline.io_utils import load_model_and_constraints
+from migemox.pipeline.io_utils import load_model_and_constraints, log_with_timestamp
 import math
 
 logging.basicConfig(level=logging.INFO)
@@ -95,8 +95,10 @@ def _min_max_flux_per_reaction(model: object, rxn_ids: List[str], infeasible: Li
     original_objective = model.objective
     try:
         for rxn_id in rxn_ids:
+            log_with_timestamp(f"Reaction: {rxn_id}")
             model.objective = rxn_id
 
+            log_with_timestamp("minimizing...")
             sol_min = model.optimize(objective_sense='minimize')
             if sol_min.status != 'optimal':
                 if infeasible == 'raise':
@@ -107,6 +109,7 @@ def _min_max_flux_per_reaction(model: object, rxn_ids: List[str], infeasible: Li
             else:
                 min_fluxes[rxn_id] = sol_min.objective_value
 
+            log_with_timestamp("maximizing...")
             sol_max = model.optimize(objective_sense='maximize')
             if sol_max.status != 'optimal':
                 if infeasible == 'raise':
@@ -117,6 +120,7 @@ def _min_max_flux_per_reaction(model: object, rxn_ids: List[str], infeasible: Li
             else:
                 max_fluxes[rxn_id] = sol_max.objective_value
     finally:
+        log_with_timestamp("success!")
         model.objective = original_objective
     return min_fluxes, max_fluxes
 
@@ -195,6 +199,7 @@ def _process_single_model(
         min_fluxes, max_fluxes, rxns = {}, {}, []
         
         if method == "biomass":
+            log_with_timestamp("Using method 'biomass'")
             if net_production_dict:
                 # Only process mets with a constraint for this model
                 sample_id = _get_sample_id_from_model_name(model_name)
@@ -225,6 +230,7 @@ def _process_single_model(
                 rxns = rxns_in_model
 
         elif method == "fecal_max":
+            log_with_timestamp("Using method 'fecal_max'")
             if mets_list is None:
                 raise ValueError("mets_list must be provided when method='fecal_max'.")
             if raw_fva_df is None:
@@ -247,8 +253,11 @@ def _process_single_model(
                 raise KeyError(
                     f"Sample ID '{sample_id}' not found in raw_fva_df index."
                 )
+            
+            log_with_timestamp("Initial checks passed")
 
             for iex_pattern in mets_list:
+                log_with_timestamp(f"Processing IEX reaction {iex_pattern}")
                 # iex_pattern is like "IEX_glu_D[u]tr" (from predict_microbe_contributions)
                 if not iex_pattern.startswith("IEX_") or not iex_pattern.endswith("[u]tr"):
                     raise ValueError(f"Unexpected IEX metabolite format: {iex_pattern}")
@@ -299,7 +308,9 @@ def _process_single_model(
                         )
 
                     # Use your per-reaction min/max helper (no fraction_of_optimum FVA here)
+                    log_with_timestamp("running fva")
                     minf, maxf = _min_max_flux_per_reaction(model, iex_rxn_ids, infeasible='raise')
+                    log_with_timestamp("fva complete")
                     min_fluxes.update(minf)
                     max_fluxes.update(maxf)
                     rxns.extend(iex_rxn_ids)
