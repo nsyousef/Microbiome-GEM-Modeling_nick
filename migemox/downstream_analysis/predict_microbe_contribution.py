@@ -299,7 +299,7 @@ def _process_single_model(
                         )
 
                     # Use your per-reaction min/max helper (no fraction_of_optimum FVA here)
-                    minf, maxf = _min_max_flux_per_reaction(model, iex_rxn_ids, infeasible='warn')
+                    minf, maxf = _min_max_flux_per_reaction(model, iex_rxn_ids, infeasible='raise')
                     min_fluxes.update(minf)
                     max_fluxes.update(maxf)
                     rxns.extend(iex_rxn_ids)
