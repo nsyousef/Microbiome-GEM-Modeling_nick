@@ -106,6 +106,8 @@ def _min_max_flux_per_reaction(model: object, rxn_ids: List[str], infeasible: Li
                 elif infeasible == 'warn':
                     min_fluxes[rxn_id] = 0
                     print(f"WARNING: solver status was {sol_min.status} for rxn_id {rxn_id} in model {model.name}")
+                else:
+                    raise ValueError(f"Invalid setting for `infeasible`: {infeasible}")
             else:
                 min_fluxes[rxn_id] = sol_min.objective_value
 
@@ -117,10 +119,12 @@ def _min_max_flux_per_reaction(model: object, rxn_ids: List[str], infeasible: Li
                 elif infeasible == 'warn':
                     max_fluxes[rxn_id] = 0
                     print(f"WARNING: solver status was {sol_max.status} for rxn_id {rxn_id} in model {model.name}")
+                else:
+                    raise ValueError(f"Invalid setting for `infeasible`: {infeasible}")
             else:
                 max_fluxes[rxn_id] = sol_max.objective_value
-    finally:
         log_with_timestamp("success!")
+    finally:
         model.objective = original_objective
     return min_fluxes, max_fluxes
 
