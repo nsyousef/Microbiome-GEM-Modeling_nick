@@ -393,7 +393,7 @@ def _process_single_model(
                 model.add_cons_vars([net_constr])
 
                 try:
-                    pattern = f"_IEX_{met_id}tr"
+                    pattern = f"_IEX_{met_id}[u]tr"
                     iex_rxn_ids = [rxn.id for rxn in model.reactions if pattern in rxn.id]
                     if not iex_rxn_ids:
                         raise RuntimeError(
