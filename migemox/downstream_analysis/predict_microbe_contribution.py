@@ -400,7 +400,7 @@ def _process_single_model(
                             f"No IEX reactions found for metabolite {met_id} in model {model_name}."
                         )
 
-                    minf, maxf = _min_max_flux_per_reaction(model, iex_rxn_ids, infeasible='warn')
+                    minf, maxf = _min_max_flux_per_reaction(model, iex_rxn_ids, infeasible='raise')
                     min_fluxes.update(minf)
                     max_fluxes.update(maxf)
                     rxns.extend(iex_rxn_ids)
