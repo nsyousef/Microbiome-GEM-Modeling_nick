@@ -666,7 +666,7 @@ def build_and_save_global_model(abun_filepath: str, mod_filepath: str, out_filep
         global_model_dir / f'{GLOBAL_MODEL_NAME}_C.npz',
     ]
 
-    if all(pth.exists for pth in paths_to_check):
+    if all(pth.exists() for pth in paths_to_check):
         log_with_timestamp("Global model already built. Using pre-existing one.")
 
         ex_mets = load_json(ex_mets_path)
