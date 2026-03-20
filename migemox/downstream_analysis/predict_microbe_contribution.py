@@ -337,7 +337,7 @@ def _process_single_model(
                 met_id = iex_pattern[len("IEX_"):-len("[u]tr")]
 
                 fecal_ex_rxn_id = f"EX_{met_id}[fe]"
-                diet_ex_rxn_id = f"EX_{met_id}[d]"
+                diet_ex_rxn_id = f"Diet_EX_{met_id}[d]"
 
                 if fecal_ex_rxn_id not in model.reactions:
                     raise RuntimeError(f"Fecal exchange reaction {fecal_ex_rxn_id} not found in model {model_name}.")
