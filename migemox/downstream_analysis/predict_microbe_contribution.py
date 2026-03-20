@@ -141,6 +141,26 @@ def _process_batch_parallel(
 ) -> Dict:
     """Process batch of models in parallel"""
     batch_results = {}
+    
+    # --- SEQUENTIAL VERSION FOR DEBUGGING ---
+    # for model_file in tqdm(current_batch, desc="Processing batches (sequential)"):
+    #     result = _process_single_model(
+    #         model_file,
+    #         diet_mod_dir,
+    #         mets_list,
+    #         net_production_dict,
+    #         solver,
+    #         method,
+    #         raw_fva_df if method == "fecal_max" else None,
+    #         net_secretion_df if method == "net_secretion" else None,
+    #     )
+    #     if result is not None:
+    #         batch_results[result['model_name']] = {
+    #             'min_fluxes': result['min_fluxes'],
+    #             'max_fluxes': result['max_fluxes'],
+    #             'rxns': result['rxns']
+    #         }
+
     with ProcessPoolExecutor(max_workers=workers) as executor:
         futures = [
             executor.submit(
