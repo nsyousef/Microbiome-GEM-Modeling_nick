@@ -52,9 +52,9 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
         a positive net secretion. The alternatives are:
         * `'fecal_max'`: Constrain the fecal exchange reaction for the reaction of interest to be at least
         the flux predicted in the raw fecal secretions. Then run FVA on IEX reactions of interest.
-        * `'net_secretion'`: Constrain the net secretion flux (`v_diet + v_fecal`) to be at least 99% of
-        the net secretion flux from the initial simulations (i.e., `v_diet + v_fecal >= 0.99 * net_secretion`).
-        Then run FVA on IEX reactions of interest.
+        * 'net_exchange': Constrain the net exchange (v_diet + v_fecal) for each metabolite using
+        FVA-derived signed bounds (min_diet + max_fecal). If positive, impose a secretion-like
+        lower bound; if negative, impose an uptake-like upper bound. Then run FVA on IEX reactions.
         precision: A format specifier such as ':.2f', ':.3g', '.2f', '.3g', etc. Used when calculating
         the flux spans to round the min and max fluxes to a certain number of decimal points or sig figs
         (when predicting microbe contributions).
@@ -124,7 +124,6 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
             workers=workers,
             method=method,
             raw_fva_df=raw_fva_df,
-            net_secretion_df=net_secretion_df,
             precision=precision,
         )
         if use_net_production_dict: kwargs['net_production_dict'] = pos_net_prod

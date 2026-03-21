@@ -137,7 +137,6 @@ def _process_batch_parallel(
     workers: int,
     method: str,
     raw_fva_df: Optional[pd.DataFrame],
-    net_secretion_df: Optional[pd.DataFrame],
 ) -> Dict:
     """Process batch of models in parallel"""
     batch_results = {}
@@ -151,8 +150,7 @@ def _process_batch_parallel(
     #         net_production_dict,
     #         solver,
     #         method,
-    #         raw_fva_df if method == "fecal_max" else None,
-    #         net_secretion_df if method == "net_secretion" else None,
+    #         raw_fva_df if method in {"fecal_max", "net_exchange"} else None,
     #     )
     #     if result is not None:
     #         batch_results[result['model_name']] = {
@@ -171,8 +169,7 @@ def _process_batch_parallel(
                 net_production_dict,
                 solver,
                 method,
-                raw_fva_df if method == "fecal_max" else None,
-                net_secretion_df if method == "net_secretion" else None,
+                raw_fva_df if method in {"fecal_max", "net_exchange"} else None,
             )
             for model_file in current_batch
         ]
@@ -197,7 +194,6 @@ def _process_single_model(
     solver: str,
     method: str,
     raw_fva_df: Optional[pd.DataFrame],
-    net_secretion_df: Optional[pd.DataFrame],
 ) -> Optional[Dict]:
     """
     Process a single model file
@@ -343,17 +339,33 @@ def _process_single_model(
                     ex_rxn.lower_bound = orig_lb
                     ex_rxn.upper_bound = orig_ub
 
-        elif method == "net_secretion":
+        elif method == "net_exchange":
+            log_with_timestamp("Using method 'net_exchange'")
             if mets_list is None:
-                raise ValueError("mets_list must be provided when method='net_secretion'.")
-            if net_secretion_df is None:
-                raise ValueError("net_secretion_df must be provided when method='net_secretion'.")
+                raise ValueError("mets_list must be provided when method='net_exchange'.")
+            if raw_fva_df is None:
+                raise ValueError("raw_fva_df must be provided when method='net_exchange'.")
 
-            # Sample ID is assumed to be the suffix after the last underscore in the model name,
-            # same convention as net_production_dict branch.
+            # Basic structural check on raw_fva_df, similar to fecal_max
+            if not isinstance(raw_fva_df.index, pd.MultiIndex) or raw_fva_df.index.names != ['Sample', 'Reaction']:
+                raise ValueError(
+                    "raw_fva_df must have a MultiIndex with levels ['Sample', 'Reaction'] as built in run_community_fva."
+                )
+
+            required_cols = ['min_flux_diet', 'max_flux_diet', 'min_flux_fecal', 'max_flux_fecal']
+            for col in required_cols:
+                if col not in raw_fva_df.columns:
+                    raise ValueError(
+                        f"raw_fva_df must contain a '{col}' column for method='net_exchange'."
+                    )
+
             sample_id = _get_sample_id_from_model_name(model_name)
-            if sample_id not in net_secretion_df.columns:
-                raise KeyError(f"Sample ID '{sample_id}' not found in net_secretion_df columns.")
+            if sample_id not in raw_fva_df.index.get_level_values('Sample'):
+                raise KeyError(
+                    f"Sample ID '{sample_id}' not found in raw_fva_df index."
+                )
+
+            tol = 1e-10
 
             for iex_pattern in mets_list:
                 if not iex_pattern.startswith("IEX_") or not iex_pattern.endswith("[u]tr"):
@@ -368,27 +380,47 @@ def _process_single_model(
                 if diet_ex_rxn_id not in model.reactions:
                     raise RuntimeError(f"Diet exchange reaction {diet_ex_rxn_id} not found in model {model_name}.")
 
+                # Look up FVA bounds for diet and fecal exchanges
+                try:
+                    row_diet = raw_fva_df.loc[(sample_id, diet_ex_rxn_id)]
+                except KeyError:
+                    raise RuntimeError(
+                        f"FVA results for sample '{sample_id}', reaction '{diet_ex_rxn_id}' "
+                        f"not found in raw_fva_df."
+                    )
+                try:
+                    row_fecal = raw_fva_df.loc[(sample_id, fecal_ex_rxn_id)]
+                except KeyError:
+                    raise RuntimeError(
+                        f"FVA results for sample '{sample_id}', reaction '{fecal_ex_rxn_id}' "
+                        f"not found in raw_fva_df."
+                    )
+
+                min_diet = float(row_diet['min_flux_diet'])
+                max_fecal = float(row_fecal['max_flux_fecal'])
+
+                # Signed net-exchange indicator
+                S = min_diet + max_fecal
+
                 fecal_rxn = model.reactions.get_by_id(fecal_ex_rxn_id)
                 diet_rxn = model.reactions.get_by_id(diet_ex_rxn_id)
 
-                if fecal_ex_rxn_id not in net_secretion_df.index:
-                    raise KeyError(
-                        f"Fecal exchange reaction {fecal_ex_rxn_id} not found in net_secretion_df index."
-                    )
-
-                net_secretion = float(net_secretion_df.loc[fecal_ex_rxn_id, sample_id])
-                if net_secretion <= 1e-10:
-                    raise RuntimeError(
-                        f"Predicted net fecal secretion for {fecal_ex_rxn_id} in sample {sample_id} "
-                        f"is non-positive ({net_secretion}); cannot apply 'net_secretion' method."
-                    )
-
-                # Add linear constraint: v_diet + v_fecal >= 0.99 * net_secretion
-                # Use the solver interface provided by cobrapy
+                # Build linear constraint depending on sign of S
                 interface = model.solver.interface
                 expr = diet_rxn.flux_expression + fecal_rxn.flux_expression
-                constr_name = f"net_secretion_{met_id}_{sample_id}"
-                net_constr = interface.Constraint(expr, lb=0.99 * net_secretion, name=constr_name)
+                constr_name = f"net_exchange_{met_id}_{sample_id}"
+
+                # Decide which constraint to impose
+                if S > tol:
+                    # Secretion-capable: v_diet + v_fecal >= 0.99 * S
+                    net_constr = interface.Constraint(expr, lb=0.99 * S, name=constr_name)
+                elif S < -tol:
+                    # Uptake-capable: v_diet + v_fecal <= 0.99 * S  (S is negative)
+                    net_constr = interface.Constraint(expr, ub=0.99 * S, name=constr_name)
+                else:
+                    # |S| ~ 0: no meaningful net exchange; skip constraint + FVA for this met
+                    # (or you could still do unconstrained FVA if you prefer)
+                    continue
 
                 model.add_cons_vars([net_constr])
 
@@ -405,7 +437,6 @@ def _process_single_model(
                     max_fluxes.update(maxf)
                     rxns.extend(iex_rxn_ids)
                 finally:
-                    # remove the constraint
                     model.remove_cons_vars([net_constr])
         
         return {
@@ -513,7 +544,6 @@ def predict_microbe_contributions(
     workers: int = 1,
     method: str = "biomass",
     raw_fva_df: Optional[pd.DataFrame] = None,
-    net_secretion_df: Optional[pd.DataFrame] = None,
     precision: str = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     '''
@@ -533,10 +563,14 @@ def predict_microbe_contributions(
                              temporarily set to the net production rate for each metabolite
         solver: Solver to use for solving FVA
         workers: Number of processes to use for parallelization
-        method: "biomass" (default), "fecal_max", or "net_secretion".
+        method: "biomass" (default), "fecal_max", or "net_exchange". TODO: add more description for biomass and fecal_max
+        * 'net_exchange': Use signed FVA bounds on diet + fecal exchanges to
+          constrain total net exchange (v_diet + v_fecal) per metabolite:
+          if min_diet + max_fecal > 0, treat as secretion-capable and impose
+          a lower bound; if < 0, treat as uptake-capable and impose an upper
+          bound. Then run FVA on IEX reactions.
         raw_fa_df: only required/used for method="fecal_max". Ignored otherwise. The DataFrame of raw
         FVA results (must contain the fecal max)
-        net_secretion_df: only required/used for method="net_secretion". Ignored otherwise.
         precision: A format specifier such as ':.2f', ':.3g', '.2f', '.3g', etc. Used when calculating
         the flux spans to round the min and max fluxes to a certain number of decimal points or sig figs.
 
@@ -549,15 +583,15 @@ def predict_microbe_contributions(
                     exchange reactions
     '''    
 
-    if method not in {"biomass", "fecal_max", "net_secretion"}:
+    if method not in {"biomass", "fecal_max", "net_exchange"}:
         raise ValueError(f"Unknown method '{method}'. "
-                        "Expected 'biomass', 'fecal_max', or 'net_secretion'.")
-    if method in {"fecal_max", "net_secretion"} and mets_list is None:
+                         "Expected 'biomass', 'fecal_max', or 'net_exchange'.")
+    if method in {"fecal_max", "net_exchange"} and mets_list is None:
         raise ValueError(f"mets_list must be provided when method='{method}'.")
-    if method == "net_secretion" and net_secretion_df is None:
-        raise ValueError("net_secretion_df must be provided when method='net_secretion'.")
     if method == "fecal_max" and raw_fva_df is None:
         raise ValueError("raw_fva_df must be provided when method='fecal_max'.")
+    if method == "net_exchange" and raw_fva_df is None:
+        raise ValueError("raw_fva_df must be provided when method='net_exchange'.")
 
     res_path = Path.cwd() / 'Contributions' if not res_path else Path(res_path)
     os.makedirs(res_path, exist_ok=True)
@@ -611,7 +645,7 @@ def predict_microbe_contributions(
         batch_results = _process_batch_parallel(
             current_batch, diet_mod_dir, mets_list,
             net_production_dict, solver, workers,
-            method, raw_fva_df, net_secretion_df
+            method, raw_fva_df
         )
 
         for model_name, results in batch_results.items():
