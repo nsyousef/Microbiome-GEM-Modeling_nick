@@ -382,17 +382,17 @@ def _process_single_model(
 
                 # Look up FVA bounds for diet and fecal exchanges
                 try:
-                    row_diet = raw_fva_df.loc[(sample_id, diet_ex_rxn_id)]
+                    row_diet = raw_fva_df.loc[(sample_id, fecal_ex_rxn_id)]
                 except KeyError:
                     raise RuntimeError(
-                        f"FVA results for sample '{sample_id}', reaction '{diet_ex_rxn_id}' "
+                        f"Diet FVA results for sample '{sample_id}', reaction '{fecal_ex_rxn_id}' "
                         f"not found in raw_fva_df."
                     )
                 try:
                     row_fecal = raw_fva_df.loc[(sample_id, fecal_ex_rxn_id)]
                 except KeyError:
                     raise RuntimeError(
-                        f"FVA results for sample '{sample_id}', reaction '{fecal_ex_rxn_id}' "
+                        f"Fecal FVA results for sample '{sample_id}', reaction '{fecal_ex_rxn_id}' "
                         f"not found in raw_fva_df."
                     )
 
