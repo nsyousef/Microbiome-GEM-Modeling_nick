@@ -308,11 +308,13 @@ def _process_single_model(
                 ex_rxn = model.reactions.get_by_id(ex_rxn_id)
                 orig_lb, orig_ub = ex_rxn.lower_bound, ex_rxn.upper_bound
 
-                # Constrain fecal exchange to 99% of this precomputed maximum
-                new_lb = max(orig_lb, 0.99 * fecal_max)
+                # Constrain fecal exchange to 98% of this precomputed maximum
+                # NOTE: set it to 0.98 instead of 0.99 to prevent infeasibilities
+                # due to numerical tolerance issues
+                new_lb = max(orig_lb, 0.98 * fecal_max)
                 if new_lb > orig_ub + 1e-10:
                     raise RuntimeError(
-                        f"Inconsistent bounds for {ex_rxn_id} after applying 0.99*fecal_max "
+                        f"Inconsistent bounds for {ex_rxn_id} after applying 0.98*fecal_max "
                         f"in model {model_name} (new_lb={new_lb}, orig_ub={orig_ub})."
                     )
                 ex_rxn.lower_bound = new_lb
@@ -412,11 +414,13 @@ def _process_single_model(
 
                 # Decide which constraint to impose
                 if S > tol:
-                    # Secretion-capable: v_diet + v_fecal >= 0.99 * S
-                    net_constr = interface.Constraint(expr, lb=0.99 * S, name=constr_name)
+                    # Secretion-capable: v_diet + v_fecal >= 0.98 * S
+                    # NOTE: we use 0.98 because 0.99 can cause random infeasibilities
+                    # due to numerical tolerance issues
+                    net_constr = interface.Constraint(expr, lb=0.98 * S, name=constr_name)
                 elif S < -tol:
-                    # Uptake-capable: v_diet + v_fecal <= 0.99 * S  (S is negative)
-                    net_constr = interface.Constraint(expr, ub=0.99 * S, name=constr_name)
+                    # Uptake-capable: v_diet + v_fecal <= 0.98 * S  (S is negative)
+                    net_constr = interface.Constraint(expr, ub=0.98 * S, name=constr_name)
                 else:
                     # |S| ~ 0: no meaningful net exchange; skip constraint + FVA for this met
                     # (or you could still do unconstrained FVA if you prefer)
