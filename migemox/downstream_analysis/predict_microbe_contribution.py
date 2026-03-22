@@ -87,87 +87,61 @@ def _perform_fva(model: object, rxns_in_model: List[str], solver: str) -> Tuple[
         
         return min_fluxes, max_fluxes
     
-def _min_max_flux_per_reaction(model: object, rxn_ids: List[str], infeasible: Literal['raise', 'warn']='raise') -> Tuple[Dict[str, float], Dict[str, float]]:
+def _min_max_flux_per_reaction(
+    model: object,
+    rxn_ids: List[str],
+    infeasible: Literal['raise', 'warn'] = 'raise'
+) -> Tuple[Dict[str, float], Dict[str, float]]:
     """Compute min/max flux for each reaction in rxn_ids without imposing
     a fraction-of-optimum constraint on the existing model objective.
-    Raises on infeasibilities."""
+    Uses context managers to ensure model state is restored after each solve.
+    """
     min_fluxes, max_fluxes = {}, {}
-    original_objective = model.objective
-    try:
-        for rxn_id in rxn_ids:
-            log_with_timestamp(f"Reaction: {rxn_id}")
-            model.objective = rxn_id
+
+    for rxn_id in rxn_ids:
+        log_with_timestamp(f"Reaction: {rxn_id}")
+
+        # Minimize
+        with model:
+            rxn = model.reactions.get_by_id(rxn_id)
+            model.objective = rxn
 
             log_with_timestamp("minimizing...")
             sol_min = model.optimize(objective_sense='minimize')
             if sol_min.status != 'optimal':
                 if infeasible == 'raise':
-                    raise RuntimeError(f"Minimization infeasible or non-optimal for reaction {rxn_id}: status {sol_min.status}")
+                    raise RuntimeError(
+                        f"Minimization infeasible or non-optimal for reaction {rxn_id}: status {sol_min.status}"
+                    )
                 elif infeasible == 'warn':
-                    min_fluxes[rxn_id] = 0
+                    min_fluxes[rxn_id] = 0.0
                     print(f"WARNING: solver status was {sol_min.status} for rxn_id {rxn_id} in model {model.name}")
                 else:
                     raise ValueError(f"Invalid setting for `infeasible`: {infeasible}")
             else:
                 min_fluxes[rxn_id] = sol_min.objective_value
 
-            log_with_timestamp("maximizing...")
-            sol_max = model.optimize(objective_sense='maximize')
-            if sol_max.status != 'optimal':
-                if infeasible == 'raise':
-                    raise RuntimeError(f"Maximization infeasible or non-optimal for reaction {rxn_id}: status {sol_max.status}")
-                elif infeasible == 'warn':
-                    max_fluxes[rxn_id] = 0
-                    print(f"WARNING: solver status was {sol_max.status} for rxn_id {rxn_id} in model {model.name}")
-                else:
-                    raise ValueError(f"Invalid setting for `infeasible`: {infeasible}")
-            else:
-                max_fluxes[rxn_id] = sol_max.objective_value
-        log_with_timestamp("success!")
-    finally:
-        model.objective = original_objective
-    return min_fluxes, max_fluxes
-
-def _max_min_flux_per_reaction(model: object, rxn_ids: List[str], infeasible: Literal['raise', 'warn']='raise') -> Tuple[Dict[str, float], Dict[str, float]]:
-    """Compute max/min flux for each reaction in rxn_ids without imposing
-    a fraction-of-optimum constraint on the existing model objective.
-    Raises on infeasibilities."""
-    min_fluxes, max_fluxes = {}, {}
-    original_objective = model.objective
-    try:
-        for rxn_id in rxn_ids:
-            log_with_timestamp(f"Reaction: {rxn_id}")
-            model.objective = rxn_id
+        # Maximize
+        with model:
+            rxn = model.reactions.get_by_id(rxn_id)
+            model.objective = rxn
 
             log_with_timestamp("maximizing...")
             sol_max = model.optimize(objective_sense='maximize')
             if sol_max.status != 'optimal':
                 if infeasible == 'raise':
-                    raise RuntimeError(f"Maximization infeasible or non-optimal for reaction {rxn_id}: status {sol_max.status}")
+                    raise RuntimeError(
+                        f"Maximization infeasible or non-optimal for reaction {rxn_id}: status {sol_max.status}"
+                    )
                 elif infeasible == 'warn':
-                    max_fluxes[rxn_id] = 0
+                    max_fluxes[rxn_id] = 0.0
                     print(f"WARNING: solver status was {sol_max.status} for rxn_id {rxn_id} in model {model.name}")
                 else:
                     raise ValueError(f"Invalid setting for `infeasible`: {infeasible}")
             else:
                 max_fluxes[rxn_id] = sol_max.objective_value
 
-            log_with_timestamp("minimizing...")
-            sol_min = model.optimize(objective_sense='minimize')
-            if sol_min.status != 'optimal':
-                if infeasible == 'raise':
-                    raise RuntimeError(f"Minimization infeasible or non-optimal for reaction {rxn_id}: status {sol_min.status}")
-                elif infeasible == 'warn':
-                    min_fluxes[rxn_id] = 0
-                    print(f"WARNING: solver status was {sol_min.status} for rxn_id {rxn_id} in model {model.name}")
-                else:
-                    raise ValueError(f"Invalid setting for `infeasible`: {infeasible}")
-            else:
-                min_fluxes[rxn_id] = sol_min.objective_value
-
-        log_with_timestamp("success!")
-    finally:
-        model.objective = original_objective
+    log_with_timestamp("success!")
     return min_fluxes, max_fluxes
 
 def _process_batch_parallel(
@@ -373,7 +347,7 @@ def _process_single_model(
 
                     # Use your per-reaction min/max helper (no fraction_of_optimum FVA here)
                     log_with_timestamp("running fva")
-                    minf, maxf = _max_min_flux_per_reaction(model, iex_rxn_ids, infeasible='raise')
+                    minf, maxf = _min_max_flux_per_reaction(model, iex_rxn_ids, infeasible='raise')
                     log_with_timestamp("fva complete")
                     min_fluxes.update(minf)
                     max_fluxes.update(maxf)
