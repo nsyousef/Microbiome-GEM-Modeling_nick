@@ -494,7 +494,7 @@ def _process_single_model(
         
     except Exception as e:
         logger.error(f"Failed to process model {model_name}: {str(e)}")
-        if method in {"fecal_max", "net_secretion"}:
+        if method in {"fecal_max", "net_exchange"}:
             # Propagate error so the whole run fails visibly
             raise
         return None
