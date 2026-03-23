@@ -297,6 +297,18 @@ def _process_single_model(
             log_with_timestamp("Initial checks passed")
 
             for iex_pattern in mets_list:
+                log_with_timestamp(f"Processing IEX pattern {iex_pattern}")
+                # iex_pattern is like "IEX_glu_D[u]tr"
+                if not iex_pattern.startswith("IEX_") or not iex_pattern.endswith("[u]tr"):
+                    raise ValueError(f"Unexpected IEX metabolite format: {iex_pattern}")
+                met_id = iex_pattern[len("IEX_"):-len("[u]tr")]
+
+                ex_rxn_id = f"EX_{met_id}[fe]"
+                if ex_rxn_id not in model.reactions:
+                    raise RuntimeError(
+                        f"Fecal exchange reaction {ex_rxn_id} not found in model {model_name}."
+                    )
+
                 ex_rxn = model.reactions.get_by_id(ex_rxn_id)
                 orig_lb, orig_ub = ex_rxn.lower_bound, ex_rxn.upper_bound
 
@@ -310,7 +322,7 @@ def _process_single_model(
                     )
                 fecal_max_raw = float(row['max_flux_fecal'])
 
-                # --- 2) Recompute local fecal_max in THIS model state ---
+                # --- 2) Recompute local fecal_max in THIS model state (biomass-constrained FVA) ---
                 with model:
                     # Use the current model objective (community biomass) and
                     # enforce fraction_of_optimum=0.9999, exactly as in _perform_fva
