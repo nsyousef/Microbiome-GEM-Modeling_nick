@@ -325,12 +325,12 @@ def _process_single_model(
                 orig_lb, orig_ub = ex_rxn.lower_bound, ex_rxn.upper_bound
 
                 # Constrain fecal exchange to 98% of this precomputed maximum
-                # NOTE: set it to 0.98 instead of 0.99 to prevent infeasibilities
+                # NOTE: set it to 0.90 instead of 0.99 to prevent infeasibilities
                 # due to numerical tolerance issues
-                new_lb = max(orig_lb, 0.98 * fecal_max)
+                new_lb = max(orig_lb, 0.90 * fecal_max)
                 if new_lb > orig_ub + 1e-10:
                     raise RuntimeError(
-                        f"Inconsistent bounds for {ex_rxn_id} after applying 0.98*fecal_max "
+                        f"Inconsistent bounds for {ex_rxn_id} after applying 0.90*fecal_max "
                         f"in model {model_name} (new_lb={new_lb}, orig_ub={orig_ub})."
                     )
                 ex_rxn.lower_bound = new_lb
