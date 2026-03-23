@@ -335,6 +335,18 @@ def _process_single_model(
                     )
                 ex_rxn.lower_bound = new_lb
 
+                # run a feasibility check
+                with model:
+                    # keep existing objective (community biomass or whatever is set)
+                    sol_feas = model.optimize()
+                    if sol_feas.status != 'optimal':
+                        raise RuntimeError(
+                            f"Model {model_name} infeasible after applying fecal_max constraint "
+                            f"on {ex_rxn_id} (lb={new_lb}). Status: {sol_feas.status}"
+                        )
+                    
+                log_with_timestamp('feasibility check passed')
+
                 try:
                     # Collect IEX reactions for this metabolite
                     # Naming convention: f"{microbe_name}_IEX_{met_id}tr"
