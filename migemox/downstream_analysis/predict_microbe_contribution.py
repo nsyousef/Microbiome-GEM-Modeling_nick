@@ -312,14 +312,16 @@ def _process_single_model(
 
                 # --- 2) Recompute local fecal_max in THIS model state ---
                 with model:
-                    model.objective = ex_rxn
-                    sol_local = model.optimize(objective_sense='maximize')
-                if sol_local.status != 'optimal':
-                    raise RuntimeError(
-                        f"Failed to maximize fecal exchange {ex_rxn_id} in model {model_name} "
-                        f"for sample {sample_id}: status {sol_local.status}"
+                    # Use the current model objective (community biomass) and
+                    # enforce fraction_of_optimum=0.9999, exactly as in _perform_fva
+                    fva_local = flux_variability_analysis(
+                        model,
+                        reaction_list=[ex_rxn_id],
+                        fraction_of_optimum=0.9999,
+                        processes=1  # single reaction, no need for parallel
                     )
-                fecal_max_local = sol_local.objective_value
+                # Extract the local max fecal flux
+                fecal_max_local = float(fva_local.loc[ex_rxn_id, 'maximum'])
 
                 if fecal_max_local <= 1e-10:
                     raise RuntimeError(
