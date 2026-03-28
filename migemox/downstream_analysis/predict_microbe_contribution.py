@@ -272,28 +272,33 @@ def _process_single_model(
             if raw_fva_df is None:
                 raise ValueError("raw_fva_df must be provided when method='fecal_max'.")
 
-            # how close local fecal_max must be to raw_fva value
+            # Tolerances for comparing raw vs local fecal_max
             fecal_max_atol = 1e-6
             fecal_max_rtol = 1e-3  # 0.1% relative
 
+            # Number of decimal places for rounding based on atol (e.g. 1e-6 -> 6 decimals)
+            if fecal_max_atol < 1.0:
+                decimal_places = int(round(-math.log10(fecal_max_atol)))
+            else:
+                decimal_places = 0
+
             # Basic structural check on raw_fva_df
-            if not isinstance(raw_fva_df.index, pd.MultiIndex) or raw_fva_df.index.names != ['Sample', 'Reaction']:
+            if (not isinstance(raw_fva_df.index, pd.MultiIndex) or
+                    raw_fva_df.index.names != ['Sample', 'Reaction']):
                 raise ValueError(
-                    "raw_fva_df must have a MultiIndex with levels ['Sample', 'Reaction'] as built in run_community_fva."
+                    "raw_fva_df must have a MultiIndex with levels ['Sample', 'Reaction'] "
+                    "as built in run_community_fva."
                 )
             if 'max_flux_fecal' not in raw_fva_df.columns:
-                raise ValueError(
-                    "raw_fva_df must contain a 'max_flux_fecal' column."
-                )
+                raise ValueError("raw_fva_df must contain a 'max_flux_fecal' column.")
 
             # Sample ID convention: microbiota_model_diet_<sample_name>
             sample_id = _get_sample_id_from_model_name(model_name)
-
             if sample_id not in raw_fva_df.index.get_level_values('Sample'):
                 raise KeyError(
                     f"Sample ID '{sample_id}' not found in raw_fva_df index."
                 )
-            
+
             log_with_timestamp("Initial checks passed")
 
             for iex_pattern in mets_list:
@@ -312,7 +317,7 @@ def _process_single_model(
                 ex_rxn = model.reactions.get_by_id(ex_rxn_id)
                 orig_lb, orig_ub = ex_rxn.lower_bound, ex_rxn.upper_bound
 
-                # --- 1) Get upstream max fecal from raw_fva_df (for consistency check only) ---
+                # --- 1) Get upstream fecal max from raw_fva_df and round it ---
                 try:
                     row = raw_fva_df.loc[(sample_id, ex_rxn_id)]
                 except KeyError:
@@ -321,48 +326,25 @@ def _process_single_model(
                         f"not found in raw_fva_df."
                     )
                 fecal_max_raw = float(row['max_flux_fecal'])
+                fecal_max_rounded = round(fecal_max_raw, decimal_places)
 
-                # --- 2) Recompute local fecal_max in THIS model state (biomass-constrained FVA) ---
-                with model:
-                    # Use the current model objective (community biomass) and
-                    # enforce fraction_of_optimum=0.9999, exactly as in _perform_fva
-                    fva_local = flux_variability_analysis(
-                        model,
-                        reaction_list=[ex_rxn_id],
-                        fraction_of_optimum=0.9999,
-                        processes=1  # single reaction, no need for parallel
-                    )
-                # Extract the local max fecal flux
-                fecal_max_local = float(fva_local.loc[ex_rxn_id, 'maximum'])
-
-                if fecal_max_local <= 1e-10:
+                if fecal_max_rounded <= 1e-10:
                     raise RuntimeError(
-                        f"Local maximal fecal secretion for {ex_rxn_id} in sample {sample_id} "
-                        f"is non-positive ({fecal_max_local}); cannot apply 'fecal_max' method."
+                        f"Maximal fecal secretion (rounded) for {ex_rxn_id} in sample {sample_id} "
+                        f"is non-positive ({fecal_max_rounded}); cannot apply 'fecal_max' method."
                     )
 
-                # --- 3) Check consistency between raw_fva_df and local max ---
-                log_with_timestamp(f"fecal_max_local: {fecal_max_local}")
-                log_with_timestamp(f"fecal_max_raw: {fecal_max_raw}")
-                diff = abs(fecal_max_local - fecal_max_raw)
-                tol = fecal_max_atol + fecal_max_rtol * max(1.0, abs(fecal_max_raw))
-                if diff > tol:
-                    raise RuntimeError(
-                        f"Inconsistent fecal_max for {ex_rxn_id} in sample {sample_id}: "
-                        f"raw_fva_df={fecal_max_raw}, local={fecal_max_local}, diff={diff} > tol={tol}."
-                    )
-
-                # --- 4) Use local fecal_max to set the lower bound ---
+                # --- 2) First attempt: use rounded raw fecal_max_rounded ---
                 fraction = 0.99
-                new_lb = max(orig_lb, fraction * fecal_max_local)
+                new_lb = max(orig_lb, fraction * fecal_max_rounded)
                 if new_lb > orig_ub + 1e-10:
                     raise RuntimeError(
-                        f"Inconsistent bounds for {ex_rxn_id} after applying {fraction}*fecal_max_local "
+                        f"Inconsistent bounds for {ex_rxn_id} after applying {fraction}*fecal_max_rounded "
                         f"in model {model_name} (new_lb={new_lb}, orig_ub={orig_ub})."
                     )
                 ex_rxn.lower_bound = new_lb
 
-                # --- 5) Global feasibility check under this bound ---
+                # Global feasibility check
                 with model:
                     sol_feas = model.optimize()
                     if sol_feas.status != 'optimal':
@@ -371,25 +353,92 @@ def _process_single_model(
                             f"on {ex_rxn_id} (lb={new_lb}). Status: {sol_feas.status}"
                         )
 
-                log_with_timestamp('feasibility check passed')
+                log_with_timestamp('feasibility check passed (rounded raw fecal_max)')
 
-                try:
-                    # Collect IEX reactions for this metabolite
-                    # Naming convention: f"{microbe_name}_IEX_{met_id}tr"
+                # Helper to actually run min/max on IEX reactions
+                def _run_iex_minmax() -> Tuple[Dict[str, float], Dict[str, float], List[str]]:
                     pattern = f"_IEX_{met_id}[u]tr"
                     iex_rxn_ids = [rxn.id for rxn in model.reactions if pattern in rxn.id]
                     if not iex_rxn_ids:
                         raise RuntimeError(
                             f"No IEX reactions found for metabolite {met_id} in model {model_name}."
                         )
-
-                    # Use your per-reaction min/max helper (no fraction_of_optimum FVA here)
-                    log_with_timestamp("running fva")
+                    log_with_timestamp("running fva on IEX")
                     minf, maxf = _min_max_flux_per_reaction(model, iex_rxn_ids, infeasible='raise')
-                    log_with_timestamp("fva complete")
+                    log_with_timestamp("fva complete on IEX")
+                    return minf, maxf, iex_rxn_ids
+
+                try:
+                    # --- 3) Try min/max with rounded raw fecal_max_rounded ---
+                    try:
+                        minf, maxf, iex_rxn_ids = _run_iex_minmax()
+                    except RuntimeError as e:
+                        # Only fall back if this is an infeasibility/non-optimal issue
+                        if "infeasible" not in str(e) and "non-optimal" not in str(e):
+                            raise  # re-raise other types of errors
+
+                        # --- 4) Fallback: recompute fecal_max locally via FVA ---
+                        log_with_timestamp(
+                            f"WARNING: IEX min/max infeasible for {met_id} (sample {sample_id}) "
+                            f"using rounded raw fecal_max. Recomputing local fecal_max via FVA."
+                        )
+
+                        with model:
+                            fva_local = flux_variability_analysis(
+                                model,
+                                reaction_list=[ex_rxn_id],
+                                fraction_of_optimum=0.9999,
+                                processes=1,
+                            )
+                        fecal_max_local = float(fva_local.loc[ex_rxn_id, 'maximum'])
+
+                        if fecal_max_local <= 1e-10:
+                            raise RuntimeError(
+                                f"Local maximal fecal secretion for {ex_rxn_id} in sample {sample_id} "
+                                f"is non-positive ({fecal_max_local}); cannot apply 'fecal_max' fallback."
+                            )
+
+                        # Check consistency with original raw value (not just rounded)
+                        diff = abs(fecal_max_local - fecal_max_raw)
+                        tol = fecal_max_atol + fecal_max_rtol * max(1.0, abs(fecal_max_raw))
+                        log_with_timestamp(f"fecal_max_local: {fecal_max_local}")
+                        log_with_timestamp(f"fecal_max_raw:   {fecal_max_raw}")
+                        log_with_timestamp(f"diff:            {diff}, tol: {tol}")
+
+                        if diff > tol:
+                            raise RuntimeError(
+                                f"Inconsistent fecal_max for {ex_rxn_id} in sample {sample_id}: "
+                                f"raw_fva_df={fecal_max_raw}, local={fecal_max_local}, "
+                                f"diff={diff} > tol={tol}."
+                            )
+
+                        # Use local fecal_max for a second attempt
+                        new_lb_local = max(orig_lb, fraction * fecal_max_local)
+                        if new_lb_local > orig_ub + 1e-10:
+                            raise RuntimeError(
+                                f"Inconsistent bounds for {ex_rxn_id} after applying {fraction}*fecal_max_local "
+                                f"in model {model_name} (new_lb={new_lb_local}, orig_ub={orig_ub})."
+                            )
+                        ex_rxn.lower_bound = new_lb_local
+
+                        with model:
+                            sol_feas2 = model.optimize()
+                            if sol_feas2.status != 'optimal':
+                                raise RuntimeError(
+                                    f"Model {model_name} infeasible even after local fecal_max fallback "
+                                    f"on {ex_rxn_id} (lb={new_lb_local}). Status: {sol_feas2.status}"
+                                )
+
+                        log_with_timestamp('feasibility check passed (local fecal_max fallback)')
+
+                        # Now rerun IEX min/max under the local fecal_max
+                        minf, maxf, iex_rxn_ids = _run_iex_minmax()
+
+                    # If we reach here, minf/maxf are valid
                     min_fluxes.update(minf)
                     max_fluxes.update(maxf)
                     rxns.extend(iex_rxn_ids)
+
                 finally:
                     # Restore original bounds
                     ex_rxn.lower_bound = orig_lb
