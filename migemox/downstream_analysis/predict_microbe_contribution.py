@@ -86,7 +86,44 @@ def _perform_fva(model: object, rxns_in_model: List[str], solver: str) -> Tuple[
                 max_fluxes[rxn_id] = 0
         
         return min_fluxes, max_fluxes
-    
+
+def _fva_min_max_for_reactions(
+    model: object,
+    rxn_ids: List[str],
+    infeasible: Literal['raise', 'warn'] = 'raise'
+) -> Tuple[Dict[str, float], Dict[str, float]]:
+    """
+    Run flux variability analysis on the given reactions *without* imposing
+    a biomass fraction-of-optimum constraint (i.e., use current model bounds
+    as-is). Returns dicts of min and max fluxes. Raises/warns on failure.
+    """
+    try:
+        with model:
+            fva_result = flux_variability_analysis(
+                model,
+                reaction_list=rxn_ids,
+                fraction_of_optimum=None,  # do NOT constrain to optimum objective
+                processes=1,               # single-process for numerical stability
+            )
+        min_fluxes = fva_result['minimum'].to_dict()
+        max_fluxes = fva_result['maximum'].to_dict()
+        return min_fluxes, max_fluxes
+    except Exception as e:
+        if infeasible == 'raise':
+            raise RuntimeError(
+                f"FVA infeasible or failed for reactions {rxn_ids} in model {model.name}: {str(e)}"
+            ) from e
+        elif infeasible == 'warn':
+            logger.warning(
+                f"FVA failed for reactions {rxn_ids} in model {model.name}: {str(e)}. "
+                f"Setting min/max to 0."
+            )
+            min_fluxes = {rid: 0.0 for rid in rxn_ids}
+            max_fluxes = {rid: 0.0 for rid in rxn_ids}
+            return min_fluxes, max_fluxes
+        else:
+            raise ValueError(f"Invalid setting for `infeasible`: {infeasible}")
+
 def _min_max_flux_per_reaction(
     model: object,
     rxn_ids: List[str],
@@ -363,9 +400,9 @@ def _process_single_model(
                         raise RuntimeError(
                             f"No IEX reactions found for metabolite {met_id} in model {model_name}."
                         )
-                    log_with_timestamp("running fva on IEX")
-                    minf, maxf = _min_max_flux_per_reaction(model, iex_rxn_ids, infeasible='raise')
-                    log_with_timestamp("fva complete on IEX")
+                    log_with_timestamp("running FVA on IEX")
+                    minf, maxf = _fva_min_max_for_reactions(model, iex_rxn_ids, infeasible='raise')
+                    log_with_timestamp("FVA complete on IEX")
                     return minf, maxf, iex_rxn_ids
 
                 try:
