@@ -4,7 +4,7 @@ import numpy as np
 import docplex
 import cplex
 from pathlib import Path
-from cobra.io import load_matlab_model
+from cobra.io import load_matlab_model, write_sbml_model
 from cobra.flux_analysis.variability import flux_variability_analysis
 from typing import Optional, List, Tuple, Dict, Literal
 import logging
@@ -17,6 +17,29 @@ import math
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def _save_debug_model(
+    model: object,
+    model_name: str,
+    diet_mod_dir: str,
+    sample_id: str,
+    met_id: str,
+    tag: str = "fecalmax_failure",
+) -> None:
+    """
+    Save the current model state to an SBML file for debugging.
+
+    The file will be written under diet_mod_dir/Debug with a name like:
+    '<model_name>_<tag>_<sample_id>_<met_id>.sbml'
+    """
+    try:
+        debug_dir = Path(diet_mod_dir) / "Debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        fname = debug_dir / f"{model_name}_{tag}_{sample_id}_{met_id}.sbml"
+        write_sbml_model(model, fname)
+        logger.warning(f"Saved debug model to {fname}")
+    except Exception as e:
+        logger.error(f"Failed to save debug model for {model_name}, {met_id}, {sample_id}: {e}")
     
 def _get_sample_id_from_model_name(model_name: str) -> str:
     """
@@ -400,10 +423,22 @@ def _process_single_model(
                         raise RuntimeError(
                             f"No IEX reactions found for metabolite {met_id} in model {model_name}."
                         )
-                    log_with_timestamp("running FVA on IEX")
-                    minf, maxf = _fva_min_max_for_reactions(model, iex_rxn_ids, infeasible='raise')
-                    log_with_timestamp("FVA complete on IEX")
+                    log_with_timestamp("running fva on IEX (manual min/max)")
+                    minf, maxf = _min_max_flux_per_reaction(model, iex_rxn_ids, infeasible='raise')
+                    log_with_timestamp("fva complete on IEX (manual min/max)")
                     return minf, maxf, iex_rxn_ids
+
+                # def _run_iex_minmax() -> Tuple[Dict[str, float], Dict[str, float], List[str]]:
+                #     pattern = f"_IEX_{met_id}[u]tr"
+                #     iex_rxn_ids = [rxn.id for rxn in model.reactions if pattern in rxn.id]
+                #     if not iex_rxn_ids:
+                #         raise RuntimeError(
+                #             f"No IEX reactions found for metabolite {met_id} in model {model_name}."
+                #         )
+                #     log_with_timestamp("running FVA on IEX")
+                #     minf, maxf = _fva_min_max_for_reactions(model, iex_rxn_ids, infeasible='raise')
+                #     log_with_timestamp("FVA complete on IEX")
+                #     return minf, maxf, iex_rxn_ids
 
                 try:
                     # --- 3) Try min/max with rounded raw fecal_max_rounded ---
@@ -469,7 +504,27 @@ def _process_single_model(
                         log_with_timestamp('feasibility check passed (local fecal_max fallback)')
 
                         # Now rerun IEX min/max under the local fecal_max
-                        minf, maxf, iex_rxn_ids = _run_iex_minmax()
+                        try:
+                            minf, maxf, iex_rxn_ids = _run_iex_minmax()
+                        except RuntimeError as e2:
+                            # If even the local fecal_max attempt fails due to infeasibility,
+                            # save the model state for debugging and re-raise.
+                            if "infeasible" in str(e2) or "non-optimal" in str(e2):
+                                log_with_timestamp(
+                                    f"ERROR: IEX min/max still infeasible for {met_id} "
+                                    f"(sample {sample_id}) even after local fecal_max fallback. "
+                                    f"Saving debug model for inspection."
+                                )
+                                _save_debug_model(
+                                    model=model,
+                                    model_name=model_name,
+                                    diet_mod_dir=diet_mod_dir,
+                                    sample_id=sample_id,
+                                    met_id=met_id,
+                                    tag="fecalmax_failure",
+                                )
+                            # Re-raise so the pipeline fails loudly (as you currently want)
+                            raise
 
                     # If we reach here, minf/maxf are valid
                     min_fluxes.update(minf)
