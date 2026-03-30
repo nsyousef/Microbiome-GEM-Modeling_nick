@@ -4,7 +4,7 @@ import numpy as np
 import docplex
 import cplex
 from pathlib import Path
-from cobra.io import load_matlab_model, write_sbml_model
+from cobra.io import load_matlab_model, write_sbml_model, read_sbml_model
 from cobra.flux_analysis.variability import flux_variability_analysis
 from typing import Optional, List, Tuple, Dict, Literal
 import logging
@@ -18,26 +18,49 @@ import math
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def _save_debug_model(
+def _save_debug_model_with_constraints(
     model: object,
     model_name: str,
     diet_mod_dir: str,
     sample_id: str,
     met_id: str,
+    model_data: Dict,
     tag: str = "fecalmax_failure",
 ) -> None:
     """
-    Save the current model state to an SBML file for debugging.
-
-    The file will be written under diet_mod_dir/Debug with a name like:
-    '<model_name>_<tag>_<sample_id>_<met_id>.sbml'
+    Save the current model (after apply_couple_constraints) to SBML, and also
+    save the coupling constraints (C, d, dsense, ctrs) to a .npz file so the
+    exact state can be reconstructed in a notebook.
     """
     try:
         debug_dir = Path(diet_mod_dir) / "Debug"
         debug_dir.mkdir(parents=True, exist_ok=True)
-        fname = debug_dir / f"{model_name}_{tag}_{sample_id}_{met_id}.sbml"
-        write_sbml_model(model, fname)
-        logger.warning(f"Saved debug model to {fname}")
+
+        base_name = f"{model_name}_{tag}_{sample_id}_{met_id}"
+        sbml_path = debug_dir / f"{base_name}.sbml"
+        npz_path = debug_dir / f"{base_name}_constraints.npz"
+
+        # Save SBML
+        write_sbml_model(model, sbml_path)
+
+        # Save constraints
+        C = model_data.get('C')
+        d = model_data.get('d')
+        dsense = model_data.get('dsense')
+        ctrs = model_data.get('ctrs')
+        np.savez_compressed(
+            npz_path,
+            C_data=C.data if C is not None else np.array([]),
+            C_indices=C.indices if C is not None else np.array([], dtype=int),
+            C_indptr=C.indptr if C is not None else np.array([0], dtype=int),
+            C_shape=C.shape if C is not None else (0, 0),
+            d=d,
+            dsense=dsense,
+            ctrs=ctrs,
+        )
+
+        logger.warning(f"Saved debug model to {sbml_path}")
+        logger.warning(f"Saved debug constraints to {npz_path}")
     except Exception as e:
         logger.error(f"Failed to save debug model for {model_name}, {met_id}, {sample_id}: {e}")
     
@@ -507,23 +530,22 @@ def _process_single_model(
                         try:
                             minf, maxf, iex_rxn_ids = _run_iex_minmax()
                         except RuntimeError as e2:
-                            # If even the local fecal_max attempt fails due to infeasibility,
-                            # save the model state for debugging and re-raise.
                             if "infeasible" in str(e2) or "non-optimal" in str(e2):
                                 log_with_timestamp(
                                     f"ERROR: IEX min/max still infeasible for {met_id} "
                                     f"(sample {sample_id}) even after local fecal_max fallback. "
                                     f"Saving debug model for inspection."
                                 )
-                                _save_debug_model(
+                                _save_debug_model_with_constraints(
                                     model=model,
                                     model_name=model_name,
                                     diet_mod_dir=diet_mod_dir,
                                     sample_id=sample_id,
                                     met_id=met_id,
+                                    model_data=model_data,
                                     tag="fecalmax_failure",
                                 )
-                            # Re-raise so the pipeline fails loudly (as you currently want)
+                            # Re-raise so the pipeline fails loudly
                             raise
 
                     # If we reach here, minf/maxf are valid
