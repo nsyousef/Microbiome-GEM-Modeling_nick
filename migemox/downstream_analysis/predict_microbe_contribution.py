@@ -472,57 +472,98 @@ def _process_single_model(
                         if "infeasible" not in str(e) and "non-optimal" not in str(e):
                             raise  # re-raise other types of errors
 
-                        # --- 4) Fallback: recompute fecal_max locally via FVA ---
-                        log_with_timestamp(
-                            f"WARNING: IEX min/max infeasible for {met_id} (sample {sample_id}) "
-                            f"using rounded raw fecal_max. Recomputing local fecal_max via FVA."
-                        )
-
-                        with model:
-                            fva_local = flux_variability_analysis(
-                                model,
-                                reaction_list=[ex_rxn_id],
-                                fraction_of_optimum=0.9999,
-                                processes=1,
-                            )
-                        fecal_max_local = float(fva_local.loc[ex_rxn_id, 'maximum'])
-
-                        if fecal_max_local <= 1e-10:
-                            raise RuntimeError(
-                                f"Local maximal fecal secretion for {ex_rxn_id} in sample {sample_id} "
-                                f"is non-positive ({fecal_max_local}); cannot apply 'fecal_max' fallback."
+                        try:
+                            # --- 4) Fallback: recompute fecal_max locally via FVA ---
+                            log_with_timestamp(
+                                f"WARNING: IEX min/max infeasible for {met_id} (sample {sample_id}) "
+                                f"using rounded raw fecal_max. Recomputing local fecal_max via FVA."
                             )
 
-                        # Check consistency with original raw value (not just rounded)
-                        diff = abs(fecal_max_local - fecal_max_raw)
-                        tol = fecal_max_atol + fecal_max_rtol * max(1.0, abs(fecal_max_raw))
-                        log_with_timestamp(f"fecal_max_local: {fecal_max_local}")
-                        log_with_timestamp(f"fecal_max_raw:   {fecal_max_raw}")
-                        log_with_timestamp(f"diff:            {diff}, tol: {tol}")
-
-                        if diff > tol:
-                            raise RuntimeError(
-                                f"Inconsistent fecal_max for {ex_rxn_id} in sample {sample_id}: "
-                                f"raw_fva_df={fecal_max_raw}, local={fecal_max_local}, "
-                                f"diff={diff} > tol={tol}."
-                            )
-
-                        # Use local fecal_max for a second attempt
-                        new_lb_local = max(orig_lb, fraction * fecal_max_local)
-                        if new_lb_local > orig_ub + 1e-10:
-                            raise RuntimeError(
-                                f"Inconsistent bounds for {ex_rxn_id} after applying {fraction}*fecal_max_local "
-                                f"in model {model_name} (new_lb={new_lb_local}, orig_ub={orig_ub})."
-                            )
-                        ex_rxn.lower_bound = new_lb_local
-
-                        with model:
-                            sol_feas2 = model.optimize()
-                            if sol_feas2.status != 'optimal':
-                                raise RuntimeError(
-                                    f"Model {model_name} infeasible even after local fecal_max fallback "
-                                    f"on {ex_rxn_id} (lb={new_lb_local}). Status: {sol_feas2.status}"
+                            with model:
+                                fva_local = flux_variability_analysis(
+                                    model,
+                                    reaction_list=[ex_rxn_id],
+                                    fraction_of_optimum=0.9999,
+                                    processes=1,
                                 )
+                            fecal_max_local = float(fva_local.loc[ex_rxn_id, 'maximum'])
+
+                            if fecal_max_local <= 1e-10:
+                                raise RuntimeError(
+                                    f"Local maximal fecal secretion for {ex_rxn_id} in sample {sample_id} "
+                                    f"is non-positive ({fecal_max_local}); cannot apply 'fecal_max' fallback."
+                                )
+
+                            # Check consistency with original raw value (not just rounded)
+                            diff = abs(fecal_max_local - fecal_max_raw)
+                            tol = fecal_max_atol + fecal_max_rtol * max(1.0, abs(fecal_max_raw))
+                            log_with_timestamp(f"fecal_max_local: {fecal_max_local}")
+                            log_with_timestamp(f"fecal_max_raw:   {fecal_max_raw}")
+                            log_with_timestamp(f"diff:            {diff}, tol: {tol}")
+
+                            if diff > tol:
+                                raise RuntimeError(
+                                    f"Inconsistent fecal_max for {ex_rxn_id} in sample {sample_id}: "
+                                    f"raw_fva_df={fecal_max_raw}, local={fecal_max_local}, "
+                                    f"diff={diff} > tol={tol}."
+                                )
+
+                            # Use local fecal_max for a second attempt
+                            new_lb_local = max(orig_lb, fraction * fecal_max_local)
+                            if new_lb_local > orig_ub + 1e-10:
+                                raise RuntimeError(
+                                    f"Inconsistent bounds for {ex_rxn_id} after applying {fraction}*fecal_max_local "
+                                    f"in model {model_name} (new_lb={new_lb_local}, orig_ub={orig_ub})."
+                                )
+                            ex_rxn.lower_bound = new_lb_local
+
+                            with model:
+                                sol_feas2 = model.optimize()
+                                if sol_feas2.status != 'optimal':
+                                    raise RuntimeError(
+                                        f"Model {model_name} infeasible even after local fecal_max fallback "
+                                        f"on {ex_rxn_id} (lb={new_lb_local}). Status: {sol_feas2.status}"
+                                    )
+
+                            log_with_timestamp('feasibility check passed (local fecal_max fallback)')
+
+                            # Now rerun IEX min/max under the local fecal_max
+                            try:
+                                minf, maxf, iex_rxn_ids = _run_iex_minmax()
+                            except RuntimeError as e2:
+                                if "infeasible" in str(e2) or "non-optimal" in str(e2):
+                                    log_with_timestamp(
+                                        f"ERROR: IEX min/max still infeasible for {met_id} "
+                                        f"(sample {sample_id}) even after local fecal_max fallback. "
+                                        f"Saving debug model for inspection."
+                                    )
+                                    _save_debug_model_with_constraints(
+                                        model=model,
+                                        model_name=model_name,
+                                        diet_mod_dir=diet_mod_dir,
+                                        sample_id=sample_id,
+                                        met_id=met_id,
+                                        model_data=model_data,
+                                        tag="fecalmax_failure_iex",
+                                    )
+                                raise  # re-raise in any case
+
+                        except Exception as e_fallback:
+                            # Any failure in the fallback path: save model + constraints and re-raise
+                            log_with_timestamp(
+                                f"ERROR: Fallback fecal_max recomputation/feasibility failed for {met_id} "
+                                f"(sample {sample_id}). Saving debug model."
+                            )
+                            _save_debug_model_with_constraints(
+                                model=model,
+                                model_name=model_name,
+                                diet_mod_dir=diet_mod_dir,
+                                sample_id=sample_id,
+                                met_id=met_id,
+                                model_data=model_data,
+                                tag="fecalmax_failure_fallback",
+                            )
+                            raise
 
                         log_with_timestamp('feasibility check passed (local fecal_max fallback)')
 
