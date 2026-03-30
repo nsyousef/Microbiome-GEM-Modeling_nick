@@ -18,6 +18,44 @@ import math
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def _append_fecalmax_failure_row(
+    diet_mod_dir: str,
+    model_name: str,
+    sample_id: str,
+    met_id: str,
+    ex_rxn_id: str,
+    stage: str,
+    error_message: str,
+    failing_iex: Optional[str] = None,
+) -> None:
+    """
+    Append a single row describing a fecal_max failure to a CSV file in the
+    Diet/Debug directory for this run.
+
+    Columns:
+        model_name, sample_id, met_id, ex_rxn_id, failing_iex, stage, error
+    """
+    debug_dir = Path(diet_mod_dir) / "Debug"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = debug_dir / "fecalmax_failures.csv"
+
+    row = {
+        "model_name": model_name,
+        "sample_id": sample_id,
+        "met_id": met_id,
+        "ex_rxn_id": ex_rxn_id,
+        "failing_iex": failing_iex if failing_iex is not None else "",
+        "stage": stage,
+        "error": error_message.replace("\n", " "),
+    }
+
+    df = pd.DataFrame([row])
+    # Append if file exists, else create with header
+    if csv_path.exists():
+        df.to_csv(csv_path, mode="a", header=False, index=False)
+    else:
+        df.to_csv(csv_path, mode="w", header=True, index=False)
+
 def _save_debug_model_with_constraints(
     model: object,
     model_name: str,
@@ -393,97 +431,163 @@ def _process_single_model(
 
                 ex_rxn_id = f"EX_{met_id}[fe]"
                 if ex_rxn_id not in model.reactions:
-                    raise RuntimeError(
-                        f"Fecal exchange reaction {ex_rxn_id} not found in model {model_name}."
+                    log_with_timestamp(
+                        f"WARNING: Fecal exchange reaction {ex_rxn_id} not found in model {model_name}. "
+                        f"Skipping metabolite {met_id} for this model."
                     )
+                    _append_fecalmax_failure_row(
+                        diet_mod_dir,
+                        model_name,
+                        sample_id,
+                        met_id,
+                        ex_rxn_id,
+                        stage="missing_ex_rxn",
+                        error_message="Fecal exchange reaction not in model.reactions",
+                    )
+                    for rid in iex_rxn_ids:
+                        min_fluxes[rid] = 0.0
+                        max_fluxes[rid] = 0.0
+                    rxns.extend(iex_rxn_ids)
+                    continue
 
                 ex_rxn = model.reactions.get_by_id(ex_rxn_id)
                 orig_lb, orig_ub = ex_rxn.lower_bound, ex_rxn.upper_bound
+
+                # Collect all IEX reactions for this metabolite
+                pattern = f"_IEX_{met_id}[u]tr"
+                iex_rxn_ids = [rxn.id for rxn in model.reactions if pattern in rxn.id]
+                if not iex_rxn_ids:
+                    # No microbe IEX for this metabolite in this model
+                    log_with_timestamp(f"WARNING: No IEX reactions found for metabolite {met_id}. Skipping.")
+                    continue
 
                 # --- 1) Get upstream fecal max from raw_fva_df and round it ---
                 try:
                     row = raw_fva_df.loc[(sample_id, ex_rxn_id)]
                 except KeyError:
-                    raise RuntimeError(
-                        f"FVA results for sample '{sample_id}', reaction '{ex_rxn_id}' "
-                        f"not found in raw_fva_df."
+                    # If we have no FVA info for this fecal exchange, log and skip
+                    log_with_timestamp(f"WARNING: FVA results for sample '{sample_id}', reaction '{ex_rxn_id}' not found in raw_fva_df.")
+                    _append_fecalmax_failure_row(
+                        diet_mod_dir,
+                        model_name,
+                        sample_id,
+                        met_id,
+                        ex_rxn_id,
+                        stage="missing_raw_fva",
+                        error_message=f"No raw FVA entry for {ex_rxn_id}",
                     )
+                    # zero out this group's IEX fluxes
+                    for rid in iex_rxn_ids:
+                        min_fluxes[rid] = 0.0
+                        max_fluxes[rid] = 0.0
+                    rxns.extend(iex_rxn_ids)
+                    continue
+
                 fecal_max_raw = float(row['max_flux_fecal'])
                 fecal_max_rounded = round(fecal_max_raw, decimal_places)
 
                 if fecal_max_rounded <= 1e-10:
-                    raise RuntimeError(
-                        f"Maximal fecal secretion (rounded) for {ex_rxn_id} in sample {sample_id} "
-                        f"is non-positive ({fecal_max_rounded}); cannot apply 'fecal_max' method."
+                    log_with_timestamp(f"WARNING: Maximal fecal secretion (rounded) for {ex_rxn_id} in sample {sample_id}; is non-positive ({fecal_max_rounded}); cannot apply 'fecal_max' method.")
+                    _append_fecalmax_failure_row(
+                        diet_mod_dir,
+                        model_name,
+                        sample_id,
+                        met_id,
+                        ex_rxn_id,
+                        stage="raw_fecal_max_nonpositive",
+                        error_message=f"fecal_max_rounded = {fecal_max_rounded}",
                     )
+                    for rid in iex_rxn_ids:
+                        min_fluxes[rid] = 0.0
+                        max_fluxes[rid] = 0.0
+                    rxns.extend(iex_rxn_ids)
+                    continue
 
-                # --- 2) First attempt: use rounded raw fecal_max_rounded ---
+                # --- 2) First attempt: use 0.99 * rounded raw fecal_max ---
                 fraction = 0.99
                 new_lb = max(orig_lb, fraction * fecal_max_rounded)
                 if new_lb > orig_ub + 1e-10:
-                    raise RuntimeError(
-                        f"Inconsistent bounds for {ex_rxn_id} after applying {fraction}*fecal_max_rounded "
-                        f"in model {model_name} (new_lb={new_lb}, orig_ub={orig_ub})."
+                    log_with_timestamp(f"WARNING: Inconsistent bounds for {ex_rxn_id} after applying {fraction}*fecal_max_rounded in model {model_name} (new_lb={new_lb}, orig_ub={orig_ub}).")
+                    _append_fecalmax_failure_row(
+                        diet_mod_dir,
+                        model_name,
+                        sample_id,
+                        met_id,
+                        ex_rxn_id,
+                        stage="lb_rounded_inconsistent",
+                        error_message=f"new_lb={new_lb}, orig_ub={orig_ub}",
                     )
+                    for rid in iex_rxn_ids:
+                        min_fluxes[rid] = 0.0
+                        max_fluxes[rid] = 0.0
+                    rxns.extend(iex_rxn_ids)
+                    continue
+
                 ex_rxn.lower_bound = new_lb
 
                 # Global feasibility check
                 with model:
                     sol_feas = model.optimize()
-                    if sol_feas.status != 'optimal':
-                        raise RuntimeError(
-                            f"Model {model_name} infeasible after applying fecal_max constraint "
-                            f"on {ex_rxn_id} (lb={new_lb}). Status: {sol_feas.status}"
-                        )
+                if sol_feas.status != 'optimal':
+                    log_with_timestamp(f"WARNING: Model {model_name} infeasible after applying fecal_max constraint on {ex_rxn_id} (lb={new_lb}). Status: {sol_feas.status}")
+                    _append_fecalmax_failure_row(
+                        diet_mod_dir,
+                        model_name,
+                        sample_id,
+                        met_id,
+                        ex_rxn_id,
+                        stage="global_feasibility_rounded",
+                        error_message=f"status={sol_feas.status}, lb={new_lb}",
+                    )
+                    ex_rxn.lower_bound = orig_lb
+                    ex_rxn.upper_bound = orig_ub
+                    for rid in iex_rxn_ids:
+                        min_fluxes[rid] = 0.0
+                        max_fluxes[rid] = 0.0
+                    rxns.extend(iex_rxn_ids)
+                    continue
 
                 log_with_timestamp('feasibility check passed (rounded raw fecal_max)')
 
                 # Helper to actually run min/max on IEX reactions
-                def _run_iex_minmax() -> Tuple[Dict[str, float], Dict[str, float], List[str]]:
-                    pattern = f"_IEX_{met_id}[u]tr"
-                    iex_rxn_ids = [rxn.id for rxn in model.reactions if pattern in rxn.id]
-                    if not iex_rxn_ids:
-                        raise RuntimeError(
-                            f"No IEX reactions found for metabolite {met_id} in model {model_name}."
-                        )
-                    log_with_timestamp("running fva on IEX (manual min/max)")
+                def _run_iex_minmax() -> Tuple[Dict[str, float], Dict[str, float]]:
+                    log_with_timestamp("running IEX min/max (manual)")
                     minf, maxf = _min_max_flux_per_reaction(model, iex_rxn_ids, infeasible='raise')
-                    log_with_timestamp("fva complete on IEX (manual min/max)")
-                    return minf, maxf, iex_rxn_ids
-
-                # def _run_iex_minmax() -> Tuple[Dict[str, float], Dict[str, float], List[str]]:
-                #     pattern = f"_IEX_{met_id}[u]tr"
-                #     iex_rxn_ids = [rxn.id for rxn in model.reactions if pattern in rxn.id]
-                #     if not iex_rxn_ids:
-                #         raise RuntimeError(
-                #             f"No IEX reactions found for metabolite {met_id} in model {model_name}."
-                #         )
-                #     log_with_timestamp("running FVA on IEX")
-                #     minf, maxf = _fva_min_max_for_reactions(model, iex_rxn_ids, infeasible='raise')
-                #     log_with_timestamp("FVA complete on IEX")
-                #     return minf, maxf, iex_rxn_ids
+                    log_with_timestamp("IEX min/max complete (manual)")
+                    return minf, maxf
 
                 try:
                     # --- 3) Try min/max with rounded raw fecal_max_rounded ---
                     try:
-                        minf, maxf, iex_rxn_ids = _run_iex_minmax()
+                        minf, maxf = _run_iex_minmax()
+                        # Success on first attempt
+                        for rid in iex_rxn_ids:
+                            min_fluxes[rid] = minf[rid]
+                            max_fluxes[rid] = maxf[rid]
+                        rxns.extend(iex_rxn_ids)
+                        continue
+
                     except RuntimeError as e:
-                        # Only fall back if this is an infeasibility/non-optimal issue
-                        if "infeasible" not in str(e) and "non-optimal" not in str(e):
-                            raise  # re-raise other types of errors
+                        msg = str(e)
+                        if "infeasible" not in msg and "non-optimal" not in msg:
+                            raise  # unexpected error type
+
+                        # --- 4) Fallback: recompute fecal_max locally via FVA, with biomass fraction 0.99 ---
+                        log_with_timestamp(
+                            f"WARNING: IEX min/max infeasible for {met_id} (sample {sample_id}) "
+                            f"using rounded raw fecal_max. Recomputing local fecal_max via FVA (fraction_of_optimum=0.99)."
+                        )
+                        failing_iex = None
+                        # Try to parse failing rxn id from the message, if present
+                        if "reaction " in msg:
+                            failing_iex = msg.split("reaction ", 1)[-1].split(":", 1)[0]
 
                         try:
-                            # --- 4) Fallback: recompute fecal_max locally via FVA ---
-                            log_with_timestamp(
-                                f"WARNING: IEX min/max infeasible for {met_id} (sample {sample_id}) "
-                                f"using rounded raw fecal_max. Recomputing local fecal_max via FVA."
-                            )
-
                             with model:
                                 fva_local = flux_variability_analysis(
                                     model,
                                     reaction_list=[ex_rxn_id],
-                                    fraction_of_optimum=0.9999,
+                                    fraction_of_optimum=0.99,  # looser biomass fraction
                                     processes=1,
                                 )
                             fecal_max_local = float(fva_local.loc[ex_rxn_id, 'maximum'])
@@ -494,12 +598,12 @@ def _process_single_model(
                                     f"is non-positive ({fecal_max_local}); cannot apply 'fecal_max' fallback."
                                 )
 
-                            # Check consistency with original raw value (not just rounded)
+                            # Check consistency with original raw value
                             diff = abs(fecal_max_local - fecal_max_raw)
                             tol = fecal_max_atol + fecal_max_rtol * max(1.0, abs(fecal_max_raw))
                             log_with_timestamp(f"fecal_max_local: {fecal_max_local}")
                             log_with_timestamp(f"fecal_max_raw:   {fecal_max_raw}")
-                            log_with_timestamp(f"diff:            {diff}, tol: {tol}")
+                            log_with_timestamp(f"diff:           {diff}, tol: {tol}")
 
                             if diff > tol:
                                 raise RuntimeError(
@@ -517,85 +621,64 @@ def _process_single_model(
                                 )
                             ex_rxn.lower_bound = new_lb_local
 
+                            # Global feasibility check under local fecal_max
                             with model:
                                 sol_feas2 = model.optimize()
-                                if sol_feas2.status != 'optimal':
-                                    raise RuntimeError(
-                                        f"Model {model_name} infeasible even after local fecal_max fallback "
-                                        f"on {ex_rxn_id} (lb={new_lb_local}). Status: {sol_feas2.status}"
-                                    )
+                            if sol_feas2.status != 'optimal':
+                                raise RuntimeError(
+                                    f"Model {model_name} infeasible even after local fecal_max fallback "
+                                    f"on {ex_rxn_id} (lb={new_lb_local}). Status: {sol_feas2.status}"
+                                )
 
                             log_with_timestamp('feasibility check passed (local fecal_max fallback)')
 
-                            # Now rerun IEX min/max under the local fecal_max
+                            # Second attempt: IEX min/max under local fecal_max
                             try:
-                                minf, maxf, iex_rxn_ids = _run_iex_minmax()
+                                minf, maxf = _run_iex_minmax()
+                                for rid in iex_rxn_ids:
+                                    min_fluxes[rid] = minf[rid]
+                                    max_fluxes[rid] = maxf[rid]
+                                rxns.extend(iex_rxn_ids)
+                                continue
+
                             except RuntimeError as e2:
-                                if "infeasible" in str(e2) or "non-optimal" in str(e2):
-                                    log_with_timestamp(
-                                        f"ERROR: IEX min/max still infeasible for {met_id} "
-                                        f"(sample {sample_id}) even after local fecal_max fallback. "
-                                        f"Saving debug model for inspection."
-                                    )
-                                    _save_debug_model_with_constraints(
-                                        model=model,
-                                        model_name=model_name,
-                                        diet_mod_dir=diet_mod_dir,
-                                        sample_id=sample_id,
-                                        met_id=met_id,
-                                        model_data=model_data,
-                                        tag="fecalmax_failure_iex",
-                                    )
-                                raise  # re-raise in any case
+                                # Even fallback failed on IEX min/max: log, record, and zero out
+                                _append_fecalmax_failure_row(
+                                    diet_mod_dir,
+                                    model_name,
+                                    sample_id,
+                                    met_id,
+                                    ex_rxn_id,
+                                    stage="iex_minmax_local",
+                                    error_message=str(e2),
+                                    failing_iex=failing_iex,
+                                )
+                                for rid in iex_rxn_ids:
+                                    min_fluxes[rid] = 0.0
+                                    max_fluxes[rid] = 0.0
+                                rxns.extend(iex_rxn_ids)
+                                continue
 
                         except Exception as e_fallback:
-                            # Any failure in the fallback path: save model + constraints and re-raise
-                            log_with_timestamp(
-                                f"ERROR: Fallback fecal_max recomputation/feasibility failed for {met_id} "
-                                f"(sample {sample_id}). Saving debug model."
+                            # Any failure in fallback local FVA / feasibility: log and zero
+                            _append_fecalmax_failure_row(
+                                diet_mod_dir,
+                                model_name,
+                                sample_id,
+                                met_id,
+                                ex_rxn_id,
+                                stage="fallback_local_fva_or_feas",
+                                error_message=str(e_fallback),
+                                failing_iex=failing_iex,
                             )
-                            _save_debug_model_with_constraints(
-                                model=model,
-                                model_name=model_name,
-                                diet_mod_dir=diet_mod_dir,
-                                sample_id=sample_id,
-                                met_id=met_id,
-                                model_data=model_data,
-                                tag="fecalmax_failure_fallback",
-                            )
-                            raise
-
-                        log_with_timestamp('feasibility check passed (local fecal_max fallback)')
-
-                        # Now rerun IEX min/max under the local fecal_max
-                        try:
-                            minf, maxf, iex_rxn_ids = _run_iex_minmax()
-                        except RuntimeError as e2:
-                            if "infeasible" in str(e2) or "non-optimal" in str(e2):
-                                log_with_timestamp(
-                                    f"ERROR: IEX min/max still infeasible for {met_id} "
-                                    f"(sample {sample_id}) even after local fecal_max fallback. "
-                                    f"Saving debug model for inspection."
-                                )
-                                _save_debug_model_with_constraints(
-                                    model=model,
-                                    model_name=model_name,
-                                    diet_mod_dir=diet_mod_dir,
-                                    sample_id=sample_id,
-                                    met_id=met_id,
-                                    model_data=model_data,
-                                    tag="fecalmax_failure",
-                                )
-                            # Re-raise so the pipeline fails loudly
-                            raise
-
-                    # If we reach here, minf/maxf are valid
-                    min_fluxes.update(minf)
-                    max_fluxes.update(maxf)
-                    rxns.extend(iex_rxn_ids)
+                            for rid in iex_rxn_ids:
+                                min_fluxes[rid] = 0.0
+                                max_fluxes[rid] = 0.0
+                            rxns.extend(iex_rxn_ids)
+                            continue
 
                 finally:
-                    # Restore original bounds
+                    # Restore original fecal bounds before moving on
                     ex_rxn.lower_bound = orig_lb
                     ex_rxn.upper_bound = orig_ub
 
@@ -710,7 +793,7 @@ def _process_single_model(
         
     except Exception as e:
         logger.error(f"Failed to process model {model_name}: {str(e)}")
-        if method in {"fecal_max", "net_exchange"}:
+        if method in {"net_exchange"}:
             # Propagate error so the whole run fails visibly
             raise
         return None
