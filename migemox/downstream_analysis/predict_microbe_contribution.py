@@ -662,6 +662,7 @@ def _process_single_model(
 
                         except Exception as e_fallback:
                             # Any failure in fallback local FVA / feasibility: log and zero
+                            raise
                             _append_fecalmax_failure_row(
                                 diet_mod_dir,
                                 model_name,
