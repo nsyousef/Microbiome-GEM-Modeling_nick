@@ -504,7 +504,7 @@ def _process_single_model(
                     continue
 
                 # --- 2) First attempt: use 0.99 * rounded raw fecal_max ---
-                fraction = 0.95 #0.99 # TEST: trying 0.95
+                fraction = 0.98 #0.99 # TEST: trying 0.98
                 new_lb = max(orig_lb, fraction * fecal_max_rounded)
                 if new_lb > orig_ub + 1e-10:
                     log_with_timestamp(f"WARNING: Inconsistent bounds for {ex_rxn_id} after applying {fraction}*fecal_max_rounded in model {model_name} (new_lb={new_lb}, orig_ub={orig_ub}).")
