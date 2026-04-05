@@ -235,6 +235,8 @@ def _min_max_flux_per_reaction(
                         f"Minimization infeasible or non-optimal for reaction {rxn_id}: status {sol_min.status}"
                     )
                 elif infeasible == 'warn':
+                    # NOTE: may want to modify the warn functionality to be consistent with MMT behavior.
+                    # However, as of April 2026, the warn functionality is not being used by MiGEMox.
                     min_fluxes[rxn_id] = 0.0
                     print(f"WARNING: solver status was {sol_min.status} for rxn_id {rxn_id} in model {model.name}")
                 else:
@@ -481,12 +483,23 @@ def _process_single_model(
                     msg = (f"Maximal fecal secretion (rounded) for {ex_rxn_id} in sample {sample_id} "
                            f"is non-positive ({fecal_max_rounded}); cannot apply 'fecal_max' method.")
                     log_with_timestamp("ERROR: " + msg)
-                    _append_fecalmax_failure_row(..., stage="raw_fecal_max_nonpositive", error_message=msg)
+                    _append_fecalmax_failure_row(
+                        diet_mod_dir,
+                        model_name,
+                        sample_id,
+                        met_id,
+                        ex_rxn_id,
+                        stage="raw_fecal_max_nonpositive", 
+                        error_message=msg
+                    )
                     raise RuntimeError(msg)
 
                 # --- 2) First attempt: use 0.98 * rounded raw fecal_max ---
-                # using 0.99 tends to cause infeasibilities, so use 0.98 instead
-                fraction = 0.98 #0.99 # TEST: trying 0.98
+                # using 0.99 tends to cause strange numerical instability and infeasibilities (e.g. 
+                # minimizing the flux through a reaction can be solved to optimality, but maximizing 
+                # the flux through that same reaction returns infeasible). Using 0.98 seems to fix
+                # these issues.
+                fraction = 0.98
                 new_lb = max(orig_lb, fraction * fecal_max_rounded)
                 if new_lb > orig_ub + 1e-10:
                     msg = (f"Inconsistent bounds for {ex_rxn_id} after applying {fraction}*fecal_max_rounded "
@@ -565,7 +578,7 @@ def _process_single_model(
                                 fva_local = flux_variability_analysis(
                                     model,
                                     reaction_list=[ex_rxn_id],
-                                    fraction_of_optimum=0.99,  # looser biomass fraction
+                                    fraction_of_optimum=0.99,  # looser biomass fraction, instead of 0.9999
                                     processes=1,
                                 )
                             fecal_max_local = float(fva_local.loc[ex_rxn_id, 'maximum'])
