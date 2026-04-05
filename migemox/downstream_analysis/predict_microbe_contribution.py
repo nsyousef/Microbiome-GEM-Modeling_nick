@@ -431,10 +431,9 @@ def _process_single_model(
 
                 ex_rxn_id = f"EX_{met_id}[fe]"
                 if ex_rxn_id not in model.reactions:
-                    log_with_timestamp(
-                        f"WARNING: Fecal exchange reaction {ex_rxn_id} not found in model {model_name}. "
-                        f"Skipping metabolite {met_id} for this model."
-                    )
+                    msg = (f"Fecal exchange reaction {ex_rxn_id} not found in model {model_name}. "
+                           f"Cannot apply 'fecal_max' for metabolite {met_id}.")
+                    log_with_timestamp("ERROR: " + msg)
                     _append_fecalmax_failure_row(
                         diet_mod_dir,
                         model_name,
@@ -442,13 +441,9 @@ def _process_single_model(
                         met_id,
                         ex_rxn_id,
                         stage="missing_ex_rxn",
-                        error_message="Fecal exchange reaction not in model.reactions",
+                        error_message=msg,
                     )
-                    for rid in iex_rxn_ids:
-                        min_fluxes[rid] = 0.0
-                        max_fluxes[rid] = 0.0
-                    rxns.extend(iex_rxn_ids)
-                    continue
+                    raise RuntimeError(msg)
 
                 ex_rxn = model.reactions.get_by_id(ex_rxn_id)
                 orig_lb, orig_ub = ex_rxn.lower_bound, ex_rxn.upper_bound
@@ -465,8 +460,9 @@ def _process_single_model(
                 try:
                     row = raw_fva_df.loc[(sample_id, ex_rxn_id)]
                 except KeyError:
-                    # If we have no FVA info for this fecal exchange, log and skip
-                    log_with_timestamp(f"WARNING: FVA results for sample '{sample_id}', reaction '{ex_rxn_id}' not found in raw_fva_df.")
+                    msg = (f"FVA results for sample '{sample_id}', reaction '{ex_rxn_id}' "
+                           f"not found in raw_fva_df.")
+                    log_with_timestamp("ERROR: " + msg)
                     _append_fecalmax_failure_row(
                         diet_mod_dir,
                         model_name,
@@ -474,54 +470,38 @@ def _process_single_model(
                         met_id,
                         ex_rxn_id,
                         stage="missing_raw_fva",
-                        error_message=f"No raw FVA entry for {ex_rxn_id}",
+                        error_message=msg,
                     )
-                    # zero out this group's IEX fluxes
-                    for rid in iex_rxn_ids:
-                        min_fluxes[rid] = 0.0
-                        max_fluxes[rid] = 0.0
-                    rxns.extend(iex_rxn_ids)
-                    continue
+                    raise RuntimeError(msg)
 
                 fecal_max_raw = float(row['max_flux_fecal'])
                 fecal_max_rounded = round(fecal_max_raw, decimal_places)
 
                 if fecal_max_rounded <= 1e-10:
-                    log_with_timestamp(f"WARNING: Maximal fecal secretion (rounded) for {ex_rxn_id} in sample {sample_id}; is non-positive ({fecal_max_rounded}); cannot apply 'fecal_max' method.")
-                    _append_fecalmax_failure_row(
-                        diet_mod_dir,
-                        model_name,
-                        sample_id,
-                        met_id,
-                        ex_rxn_id,
-                        stage="raw_fecal_max_nonpositive",
-                        error_message=f"fecal_max_rounded = {fecal_max_rounded}",
-                    )
-                    for rid in iex_rxn_ids:
-                        min_fluxes[rid] = 0.0
-                        max_fluxes[rid] = 0.0
-                    rxns.extend(iex_rxn_ids)
-                    continue
+                    msg = (f"Maximal fecal secretion (rounded) for {ex_rxn_id} in sample {sample_id} "
+                           f"is non-positive ({fecal_max_rounded}); cannot apply 'fecal_max' method.")
+                    log_with_timestamp("ERROR: " + msg)
+                    _append_fecalmax_failure_row(..., stage="raw_fecal_max_nonpositive", error_message=msg)
+                    raise RuntimeError(msg)
 
-                # --- 2) First attempt: use 0.99 * rounded raw fecal_max ---
+                # --- 2) First attempt: use 0.98 * rounded raw fecal_max ---
+                # using 0.99 tends to cause infeasibilities, so use 0.98 instead
                 fraction = 0.98 #0.99 # TEST: trying 0.98
                 new_lb = max(orig_lb, fraction * fecal_max_rounded)
                 if new_lb > orig_ub + 1e-10:
-                    log_with_timestamp(f"WARNING: Inconsistent bounds for {ex_rxn_id} after applying {fraction}*fecal_max_rounded in model {model_name} (new_lb={new_lb}, orig_ub={orig_ub}).")
+                    msg = (f"Inconsistent bounds for {ex_rxn_id} after applying {fraction}*fecal_max_rounded "
+                           f"in model {model_name} (new_lb={new_lb}, orig_ub={orig_ub}).")
+                    log_with_timestamp("ERROR: " + msg)
                     _append_fecalmax_failure_row(
                         diet_mod_dir,
                         model_name,
                         sample_id,
                         met_id,
                         ex_rxn_id,
-                        stage="lb_rounded_inconsistent",
-                        error_message=f"new_lb={new_lb}, orig_ub={orig_ub}",
+                        stage="lb_rounded_inconsistent", 
+                        error_message=msg
                     )
-                    for rid in iex_rxn_ids:
-                        min_fluxes[rid] = 0.0
-                        max_fluxes[rid] = 0.0
-                    rxns.extend(iex_rxn_ids)
-                    continue
+                    raise RuntimeError(msg)
 
                 ex_rxn.lower_bound = new_lb
 
@@ -529,23 +509,21 @@ def _process_single_model(
                 with model:
                     sol_feas = model.optimize()
                 if sol_feas.status != 'optimal':
-                    log_with_timestamp(f"WARNING: Model {model_name} infeasible after applying fecal_max constraint on {ex_rxn_id} (lb={new_lb}). Status: {sol_feas.status}")
+                    msg = (f"Model {model_name} infeasible after applying fecal_max constraint "
+                           f"on {ex_rxn_id} (lb={new_lb}). Status: {sol_feas.status}")
+                    log_with_timestamp("ERROR: " + msg)
                     _append_fecalmax_failure_row(
                         diet_mod_dir,
                         model_name,
                         sample_id,
                         met_id,
                         ex_rxn_id,
-                        stage="global_feasibility_rounded",
-                        error_message=f"status={sol_feas.status}, lb={new_lb}",
+                        stage="global_feasibility_rounded", 
+                        error_message=msg
                     )
                     ex_rxn.lower_bound = orig_lb
                     ex_rxn.upper_bound = orig_ub
-                    for rid in iex_rxn_ids:
-                        min_fluxes[rid] = 0.0
-                        max_fluxes[rid] = 0.0
-                    rxns.extend(iex_rxn_ids)
-                    continue
+                    raise RuntimeError(msg)
 
                 log_with_timestamp('feasibility check passed (rounded raw fecal_max)')
 
@@ -643,7 +621,9 @@ def _process_single_model(
 
                             except RuntimeError as e2:
                                 # Even fallback failed on IEX min/max: log, record, and zero out
-                                raise # TEMPORARY: raise if the fallback fails
+                                msg2 = f"IEX min/max still infeasible for {met_id} (sample {sample_id}) " \
+                                       f"even after local fecal_max fallback: {e2}"
+                                log_with_timestamp("ERROR: " + msg2)
                                 _append_fecalmax_failure_row(
                                     diet_mod_dir,
                                     model_name,
@@ -651,18 +631,15 @@ def _process_single_model(
                                     met_id,
                                     ex_rxn_id,
                                     stage="iex_minmax_local",
-                                    error_message=str(e2),
+                                    error_message=msg2,
                                     failing_iex=failing_iex,
                                 )
-                                for rid in iex_rxn_ids:
-                                    min_fluxes[rid] = 0.0
-                                    max_fluxes[rid] = 0.0
-                                rxns.extend(iex_rxn_ids)
-                                continue
+                                raise
 
                         except Exception as e_fallback:
                             # Any failure in fallback local FVA / feasibility: log and zero
-                            raise
+                            msg_fb = f"Fallback local FVA/feasibility failed for {met_id} (sample {sample_id}): {e_fallback}"
+                            log_with_timestamp("ERROR: " + msg_fb)
                             _append_fecalmax_failure_row(
                                 diet_mod_dir,
                                 model_name,
@@ -670,14 +647,10 @@ def _process_single_model(
                                 met_id,
                                 ex_rxn_id,
                                 stage="fallback_local_fva_or_feas",
-                                error_message=str(e_fallback),
+                                error_message=msg_fb,
                                 failing_iex=failing_iex,
                             )
-                            for rid in iex_rxn_ids:
-                                min_fluxes[rid] = 0.0
-                                max_fluxes[rid] = 0.0
-                            rxns.extend(iex_rxn_ids)
-                            continue
+                            raise
 
                 finally:
                     # Restore original fecal bounds before moving on
