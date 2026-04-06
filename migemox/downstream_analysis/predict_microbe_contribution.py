@@ -499,7 +499,7 @@ def _process_single_model(
                 # minimizing the flux through a reaction can be solved to optimality, but maximizing 
                 # the flux through that same reaction returns infeasible). Using 0.98 seems to fix
                 # these issues.
-                fraction = 0.98
+                fraction = 0.95
                 new_lb = max(orig_lb, fraction * fecal_max_rounded)
                 if new_lb > orig_ub + 1e-10:
                     msg = (f"Inconsistent bounds for {ex_rxn_id} after applying {fraction}*fecal_max_rounded "
