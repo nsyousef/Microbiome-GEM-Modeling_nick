@@ -13,6 +13,7 @@ from glob import glob
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
 from migemox.pipeline.io_utils import load_model_and_constraints, log_with_timestamp
+from migemox.pipeline.model_utils import reset_solver
 import math
 
 logging.basicConfig(level=logging.INFO)
@@ -207,6 +208,71 @@ def _fva_min_max_for_reactions(
             return min_fluxes, max_fluxes
         else:
             raise ValueError(f"Invalid setting for `infeasible`: {infeasible}")
+
+def _all_max_then_min_for_reactions(
+    model: object,
+    rxn_ids: List[str],
+    infeasible: Literal['raise', 'warn'] = 'raise'
+) -> Tuple[Dict[str, float], Dict[str, float]]:
+    """
+    For each reaction in rxn_ids, first compute its maximal flux, then in a
+    second pass compute its minimal flux, using the current model bounds.
+    Raises if any LP is infeasible or non-optimal (when infeasible='raise').
+    """
+    max_fluxes: Dict[str, float] = {}
+    min_fluxes: Dict[str, float] = {}
+
+    # First pass: all maximizations
+    for rxn_id in rxn_ids:
+        log_with_timestamp(f"[all_max] Reaction: {rxn_id}")
+        with model:
+            rxn = model.reactions.get_by_id(rxn_id)
+            model.objective = rxn
+            log_with_timestamp("  maximizing...")
+            sol_max = model.optimize(objective_sense="maximize")
+            if sol_max.status != "optimal":
+                if infeasible == "raise":
+                    raise RuntimeError(
+                        f"Maximization infeasible or non-optimal for reaction {rxn_id}: "
+                        f"status {sol_max.status}"
+                    )
+                elif infeasible == "warn":
+                    max_fluxes[rxn_id] = 0.0
+                    print(
+                        f"WARNING: solver status was {sol_max.status} for rxn_id {rxn_id} "
+                        f"in model {model.name} (max pass)"
+                    )
+                else:
+                    raise ValueError(f"Invalid setting for `infeasible`: {infeasible}")
+            else:
+                max_fluxes[rxn_id] = sol_max.objective_value
+
+    # Second pass: all minimizations
+    for rxn_id in rxn_ids:
+        log_with_timestamp(f"[all_min] Reaction: {rxn_id}")
+        with model:
+            rxn = model.reactions.get_by_id(rxn_id)
+            model.objective = rxn
+            log_with_timestamp("  minimizing...")
+            sol_min = model.optimize(objective_sense="minimize")
+            if sol_min.status != "optimal":
+                if infeasible == "raise":
+                    raise RuntimeError(
+                        f"Minimization infeasible or non-optimal for reaction {rxn_id}: "
+                        f"status {sol_min.status}"
+                    )
+                elif infeasible == "warn":
+                    min_fluxes[rxn_id] = 0.0
+                    print(
+                        f"WARNING: solver status was {sol_min.status} for rxn_id {rxn_id} "
+                        f"in model {model.name} (min pass)"
+                    )
+                else:
+                    raise ValueError(f"Invalid setting for `infeasible`: {infeasible}")
+            else:
+                min_fluxes[rxn_id] = sol_min.objective_value
+
+    return min_fluxes, max_fluxes
 
 def _min_max_flux_per_reaction(
     model: object,
@@ -494,12 +560,8 @@ def _process_single_model(
                     )
                     raise RuntimeError(msg)
 
-                # --- 2) First attempt: use 0.98 * rounded raw fecal_max ---
-                # using 0.99 tends to cause strange numerical instability and infeasibilities (e.g. 
-                # minimizing the flux through a reaction can be solved to optimality, but maximizing 
-                # the flux through that same reaction returns infeasible). Using 0.98 seems to fix
-                # these issues.
-                fraction = 0.95
+                # --- 2) First attempt: use 0.99 * rounded raw fecal_max ---
+                fraction = 0.99
                 new_lb = max(orig_lb, fraction * fecal_max_rounded)
                 if new_lb > orig_ub + 1e-10:
                     msg = (f"Inconsistent bounds for {ex_rxn_id} after applying {fraction}*fecal_max_rounded "
@@ -546,124 +608,145 @@ def _process_single_model(
                     minf, maxf = _min_max_flux_per_reaction(model, iex_rxn_ids, infeasible='raise')
                     log_with_timestamp("IEX min/max complete (manual)")
                     return minf, maxf
+                
+                # Helper: run all max then all min for IEX reactions
+                def _run_all_max_then_min() -> Tuple[Dict[str, float], Dict[str, float]]:
+                    log_with_timestamp("running IEX all-max-then-min (manual)")
+                    minf, maxf = _all_max_then_min_for_reactions(
+                        model, iex_rxn_ids, infeasible="raise"
+                    )
+                    log_with_timestamp("IEX all-max-then-min complete (manual)")
+                    return minf, maxf
 
                 try:
-                    # --- 3) Try min/max with rounded raw fecal_max_rounded ---
+                    # Attempt 1: current solver state, rounded fecal_max_rounded LB
                     try:
-                        minf, maxf = _run_iex_minmax()
-                        # Success on first attempt
+                        minf, maxf = _run_all_max_then_min()
                         for rid in iex_rxn_ids:
                             min_fluxes[rid] = minf[rid]
                             max_fluxes[rid] = maxf[rid]
                         rxns.extend(iex_rxn_ids)
-                        continue
+                        continue  # success, move to next metabolite
 
-                    except RuntimeError as e:
-                        msg = str(e)
-                        if "infeasible" not in msg and "non-optimal" not in msg:
-                            raise  # unexpected error type
-
-                        # --- 4) Fallback: recompute fecal_max locally via FVA, with biomass fraction 0.99 ---
-                        log_with_timestamp(
-                            f"WARNING: IEX min/max infeasible for {met_id} (sample {sample_id}) "
-                            f"using rounded raw fecal_max. Recomputing local fecal_max via FVA (fraction_of_optimum=0.99)."
-                        )
-                        failing_iex = None
-                        # Try to parse failing rxn id from the message, if present
-                        if "reaction " in msg:
-                            failing_iex = msg.split("reaction ", 1)[-1].split(":", 1)[0]
-
-                        try:
-                            with model:
-                                fva_local = flux_variability_analysis(
-                                    model,
-                                    reaction_list=[ex_rxn_id],
-                                    fraction_of_optimum=0.99,  # looser biomass fraction, instead of 0.9999
-                                    processes=1,
-                                )
-                            fecal_max_local = float(fva_local.loc[ex_rxn_id, 'maximum'])
-
-                            if fecal_max_local <= 1e-10:
-                                raise RuntimeError(
-                                    f"Local maximal fecal secretion for {ex_rxn_id} in sample {sample_id} "
-                                    f"is non-positive ({fecal_max_local}); cannot apply 'fecal_max' fallback."
-                                )
-
-                            # Check consistency with original raw value
-                            diff = abs(fecal_max_local - fecal_max_raw)
-                            tol = fecal_max_atol + fecal_max_rtol * max(1.0, abs(fecal_max_raw))
-                            log_with_timestamp(f"fecal_max_local: {fecal_max_local}")
-                            log_with_timestamp(f"fecal_max_raw:   {fecal_max_raw}")
-                            log_with_timestamp(f"diff:           {diff}, tol: {tol}")
-
-                            if diff > tol:
-                                raise RuntimeError(
-                                    f"Inconsistent fecal_max for {ex_rxn_id} in sample {sample_id}: "
-                                    f"raw_fva_df={fecal_max_raw}, local={fecal_max_local}, "
-                                    f"diff={diff} > tol={tol}."
-                                )
-
-                            # Use local fecal_max for a second attempt
-                            new_lb_local = max(orig_lb, fraction * fecal_max_local)
-                            if new_lb_local > orig_ub + 1e-10:
-                                raise RuntimeError(
-                                    f"Inconsistent bounds for {ex_rxn_id} after applying {fraction}*fecal_max_local "
-                                    f"in model {model_name} (new_lb={new_lb_local}, orig_ub={orig_ub})."
-                                )
-                            ex_rxn.lower_bound = new_lb_local
-
-                            # Global feasibility check under local fecal_max
-                            with model:
-                                sol_feas2 = model.optimize()
-                            if sol_feas2.status != 'optimal':
-                                raise RuntimeError(
-                                    f"Model {model_name} infeasible even after local fecal_max fallback "
-                                    f"on {ex_rxn_id} (lb={new_lb_local}). Status: {sol_feas2.status}"
-                                )
-
-                            log_with_timestamp('feasibility check passed (local fecal_max fallback)')
-
-                            # Second attempt: IEX min/max under local fecal_max
-                            try:
-                                minf, maxf = _run_iex_minmax()
-                                for rid in iex_rxn_ids:
-                                    min_fluxes[rid] = minf[rid]
-                                    max_fluxes[rid] = maxf[rid]
-                                rxns.extend(iex_rxn_ids)
-                                continue
-
-                            except RuntimeError as e2:
-                                # Even fallback failed on IEX min/max: log, record, and zero out
-                                msg2 = f"IEX min/max still infeasible for {met_id} (sample {sample_id}) " \
-                                       f"even after local fecal_max fallback: {e2}"
-                                log_with_timestamp("ERROR: " + msg2)
-                                _append_fecalmax_failure_row(
-                                    diet_mod_dir,
-                                    model_name,
-                                    sample_id,
-                                    met_id,
-                                    ex_rxn_id,
-                                    stage="iex_minmax_local",
-                                    error_message=msg2,
-                                    failing_iex=failing_iex,
-                                )
-                                raise
-
-                        except Exception as e_fallback:
-                            # Any failure in fallback local FVA / feasibility: log and zero
-                            msg_fb = f"Fallback local FVA/feasibility failed for {met_id} (sample {sample_id}): {e_fallback}"
-                            log_with_timestamp("ERROR: " + msg_fb)
-                            _append_fecalmax_failure_row(
-                                diet_mod_dir,
-                                model_name,
-                                sample_id,
-                                met_id,
-                                ex_rxn_id,
-                                stage="fallback_local_fva_or_feas",
-                                error_message=msg_fb,
-                                failing_iex=failing_iex,
-                            )
+                    except RuntimeError as e1:
+                        msg1 = str(e1)
+                        if "infeasible" not in msg1 and "non-optimal" not in msg1:
+                            # Unexpected error: re-raise
                             raise
+
+                        log_with_timestamp(
+                            f"WARNING: IEX all-max-then-min infeasible for {met_id} "
+                            f"(sample {sample_id}) with rounded fecal_max. "
+                            f"Resetting solver and retrying."
+                        )
+
+                    # Attempt 2: reset solver state, same LB, run all-max-then-min again
+                    try:
+                        # Reset solver to clear any internal state
+                        reset_solver(model)
+                        minf, maxf = _run_all_max_then_min()
+                        for rid in iex_rxn_ids:
+                            min_fluxes[rid] = minf[rid]
+                            max_fluxes[rid] = maxf[rid]
+                        rxns.extend(iex_rxn_ids)
+                        continue  # success
+
+                    except RuntimeError as e2:
+                        msg2 = str(e2)
+                        if "infeasible" not in msg2 and "non-optimal" not in msg2:
+                            raise
+
+                        log_with_timestamp(
+                            f"WARNING: IEX all-max-then-min still infeasible for {met_id} "
+                            f"(sample {sample_id}) after solver reset. "
+                            f"Recomputing fecal_max locally and trying once more."
+                        )
+
+                    # Attempt 3: reset solver, recompute local fecal_max via FVA, set new LB,
+                    # global feasibility check, then run all-max-then-min again
+                    failing_iex = None
+                    if "reaction " in msg2:
+                        failing_iex = msg2.split("reaction ", 1)[-1].split(":", 1)[0]
+
+                    try:
+                        # reset solver again
+                        reset_solver(model)
+                        # Recompute local fecal_max with biomass fraction 0.99
+                        with model:
+                            fva_local = flux_variability_analysis(
+                                model,
+                                reaction_list=[ex_rxn_id],
+                                fraction_of_optimum=0.99,
+                                processes=1,
+                            )
+                        fecal_max_local = float(fva_local.loc[ex_rxn_id, "maximum"])
+
+                        if fecal_max_local <= 1e-10:
+                            raise RuntimeError(
+                                f"Local maximal fecal secretion for {ex_rxn_id} in sample {sample_id} "
+                                f"is non-positive ({fecal_max_local}); cannot apply 'fecal_max' fallback."
+                            )
+
+                        diff = abs(fecal_max_local - fecal_max_raw)
+                        tol = fecal_max_atol + fecal_max_rtol * max(1.0, abs(fecal_max_raw))
+                        log_with_timestamp(f"fecal_max_local: {fecal_max_local}")
+                        log_with_timestamp(f"fecal_max_raw:   {fecal_max_raw}")
+                        log_with_timestamp(f"diff:           {diff}, tol: {tol}")
+
+                        if diff > tol:
+                            raise RuntimeError(
+                                f"Inconsistent fecal_max for {ex_rxn_id} in sample {sample_id}: "
+                                f"raw_fva_df={fecal_max_raw}, local={fecal_max_local}, "
+                                f"diff={diff} > tol={tol}."
+                            )
+
+                        # Use local fecal_max for LB (same fraction as above)
+                        new_lb_local = max(orig_lb, fraction * fecal_max_local)
+                        if new_lb_local > orig_ub + 1e-10:
+                            raise RuntimeError(
+                                f"Inconsistent bounds for {ex_rxn_id} after applying {fraction}*fecal_max_local "
+                                f"in model {model_name} (new_lb={new_lb_local}, orig_ub={orig_ub})."
+                            )
+                        ex_rxn.lower_bound = new_lb_local
+
+                        # Global feasibility check under local fecal_max
+                        with model:
+                            sol_feas2 = model.optimize()
+                        if sol_feas2.status != "optimal":
+                            raise RuntimeError(
+                                f"Model {model_name} infeasible even after local fecal_max fallback "
+                                f"on {ex_rxn_id} (lb={new_lb_local}). Status: {sol_feas2.status}"
+                            )
+
+                        log_with_timestamp("feasibility check passed (local fecal_max fallback)")
+
+                        # Reset solver and run all-max-then-min a final time
+                        reset_solver(model)
+                        minf, maxf = _run_all_max_then_min()
+                        for rid in iex_rxn_ids:
+                            min_fluxes[rid] = minf[rid]
+                            max_fluxes[rid] = maxf[rid]
+                        rxns.extend(iex_rxn_ids)
+                        continue  # success
+
+                    except Exception as e3:
+                        msg3 = (
+                            f"Final all-max-then-min attempt failed for {met_id} (sample {sample_id}) "
+                            f"even after local fecal_max recomputation: {e3}"
+                        )
+                        log_with_timestamp("ERROR: " + msg3)
+                        _append_fecalmax_failure_row(
+                            diet_mod_dir,
+                            model_name,
+                            sample_id,
+                            met_id,
+                            ex_rxn_id,
+                            stage="final_all_max_min_failure",
+                            error_message=msg3,
+                            failing_iex=failing_iex,
+                        )
+                        # Hard error: propagate up so the run fails noisily
+                        raise
 
                 finally:
                     # Restore original fecal bounds before moving on
