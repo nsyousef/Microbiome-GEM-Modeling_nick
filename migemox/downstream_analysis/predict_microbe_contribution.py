@@ -583,6 +583,16 @@ def _process_single_model(
                 # Global feasibility check
                 with model:
                     sol_feas = model.optimize()
+                    if sol_feas.status != 'optimal':
+                        _save_debug_model_with_constraints(
+                            model,
+                            model_name=model_name,
+                            diet_mod_dir = diet_mod_dir,
+                            sample_id = sample_id,
+                            met_id = met_id,
+                            model_data = model_data,
+                            tag = "first_feasibility_check_failure"
+                        )
                 if sol_feas.status != 'optimal':
                     msg = (f"Model {model_name} infeasible after applying fecal_max constraint "
                            f"on {ex_rxn_id} (lb={new_lb}). Status: {sol_feas.status}")
