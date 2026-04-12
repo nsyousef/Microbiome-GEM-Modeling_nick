@@ -560,8 +560,8 @@ def _process_single_model(
                     )
                     raise RuntimeError(msg)
 
-                # --- 2) First attempt: use 0.99 * rounded raw fecal_max ---
-                fraction = 0.99
+                # --- 2) First attempt: use 0.98 * rounded raw fecal_max ---
+                fraction = 0.98
                 new_lb = max(orig_lb, fraction * fecal_max_rounded)
                 if new_lb > orig_ub + 1e-10:
                     msg = (f"Inconsistent bounds for {ex_rxn_id} after applying {fraction}*fecal_max_rounded "
@@ -755,6 +755,18 @@ def _process_single_model(
                             error_message=msg3,
                             failing_iex=failing_iex,
                         )
+
+                        # Save full debug model at the point of final failure
+                        _save_debug_model_with_constraints(
+                            model=model,
+                            model_name=model_name,
+                            diet_mod_dir=diet_mod_dir,
+                            sample_id=sample_id,
+                            met_id=met_id,
+                            model_data=model_data,
+                            tag="final_all_max_min_failure",
+                        )
+
                         # Hard error: propagate up so the run fails noisily
                         raise
 
