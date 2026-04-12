@@ -6,6 +6,7 @@ This file contains generic utilities for handling models.
 
 from cobra import Model
 from cobra_structural import Model as StructuralModel
+import time
 
 def reset_solver(model: Model, solver: str, temp_solver: str | None=None):
     """
@@ -55,11 +56,19 @@ def reset_solver(model: Model, solver: str, temp_solver: str | None=None):
 
     # Confirm that a new solver object was actually created
     if id_before == id_after:
-        raise RuntimeError(
-            f"Solver reset failed: the solver object id did not change after switching "
-            f"from '{solver}' -> '{temp_solver}' -> '{solver}'. "
-            f"id_before={id_before}, id_after={id_after}."
-        )
+        # try again, with some sleep time
+        id_before2 = id(model.solver)
+        model.solver = temp_solver
+        time.sleep(0.3)
+        model.solver = solver
+        id_after2 = id(model.solver)
+
+        if id_before2 == id_after2:
+            raise RuntimeError(
+                f"Solver reset failed: the solver object id did not change after switching "
+                f"from '{solver}' -> '{temp_solver}' -> '{solver}'. "
+                f"id_before={id_before}, id_after={id_after}."
+            )
 
 def find_biomass_candidates(
         model: Model | StructuralModel,
