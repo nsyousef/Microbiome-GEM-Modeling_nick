@@ -653,7 +653,7 @@ def _process_single_model(
                     # Attempt 2: reset solver state, same LB, run all-max-then-min again
                     try:
                         # Reset solver to clear any internal state
-                        reset_solver(model)
+                        reset_solver(model, solver)
                         minf, maxf = _run_all_max_then_min()
                         for rid in iex_rxn_ids:
                             min_fluxes[rid] = minf[rid]
@@ -680,7 +680,7 @@ def _process_single_model(
 
                     try:
                         # reset solver again
-                        reset_solver(model)
+                        reset_solver(model, solver)
                         # Recompute local fecal_max with biomass fraction 0.99
                         with model:
                             fva_local = flux_variability_analysis(
@@ -731,7 +731,7 @@ def _process_single_model(
                         log_with_timestamp("feasibility check passed (local fecal_max fallback)")
 
                         # Reset solver and run all-max-then-min a final time
-                        reset_solver(model)
+                        reset_solver(model, solver)
                         minf, maxf = _run_all_max_then_min()
                         for rid in iex_rxn_ids:
                             min_fluxes[rid] = minf[rid]
