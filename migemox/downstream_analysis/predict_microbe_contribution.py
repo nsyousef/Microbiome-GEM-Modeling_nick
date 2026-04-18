@@ -384,6 +384,7 @@ def _process_batch_parallel(
     workers: int,
     method: str,
     raw_fva_df: Optional[pd.DataFrame],
+    fraction: float = 0.98,
 ) -> Dict:
     """Process batch of models in parallel"""
     batch_results = {}
@@ -398,6 +399,7 @@ def _process_batch_parallel(
     #         solver,
     #         method,
     #         raw_fva_df if method in {"fecal_max", "net_exchange"} else None,
+    #         fraction: float = 0.98,
     #     )
     #     if result is not None:
     #         batch_results[result['model_name']] = {
@@ -417,6 +419,7 @@ def _process_batch_parallel(
                 solver,
                 method,
                 raw_fva_df if method in {"fecal_max", "net_exchange"} else None,
+                fraction,
             )
             for model_file in current_batch
         ]
@@ -441,6 +444,7 @@ def _process_single_model(
     solver: str,
     method: str,
     raw_fva_df: Optional[pd.DataFrame],
+    fraction: float = 0.98,
 ) -> Optional[Dict]:
     """
     Process a single model file
@@ -603,7 +607,7 @@ def _process_single_model(
                     raise RuntimeError(msg)
 
                 # --- 2) First attempt: use 0.98 * rounded raw fecal_max ---
-                fraction = 0.98
+                log_with_timestamp(f"Using fraction of fecal_max: {fraction}")
                 new_lb = max(orig_lb, fraction * fecal_max_rounded)
                 if new_lb > orig_ub + 1e-10:
                     msg = (f"Inconsistent bounds for {ex_rxn_id} after applying {fraction}*fecal_max_rounded "
@@ -1025,6 +1029,7 @@ def predict_microbe_contributions(
     method: str = "biomass",
     raw_fva_df: Optional[pd.DataFrame] = None,
     precision: str = None,
+    fraction: float = 0.98,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     '''
     Predicts the minimal and maximal fluxes through internal exchange
@@ -1053,6 +1058,8 @@ def predict_microbe_contributions(
         FVA results (must contain the fecal max)
         precision: A format specifier such as ':.2f', ':.3g', '.2f', '.3g', etc. Used when calculating
         the flux spans to round the min and max fluxes to a certain number of decimal points or sig figs.
+        fraction: Only used when computing fecal_max; the fraction of the fecal max secretion flux to 
+        constrain the fecal exchange reaction to when maximizing and minimizing IEX reactions.
 
     Returns:
         minFluxes:  Minimal fluxes through analyzed exchange reactions,
@@ -1125,7 +1132,7 @@ def predict_microbe_contributions(
         batch_results = _process_batch_parallel(
             current_batch, diet_mod_dir, mets_list,
             net_production_dict, solver, workers,
-            method, raw_fva_df
+            method, raw_fva_df, fraction
         )
 
         for model_name, results in batch_results.items():

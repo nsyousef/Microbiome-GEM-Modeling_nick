@@ -26,7 +26,8 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
                          analyze_contributions: bool = False, fresh_start: bool = False,
                          use_net_production_dict: bool = False,
                          method: str="biomass",
-                         precision: str | None=None):
+                         precision: str | None=None,
+                         fraction: float = 0.98):
     """
     Main function to run the MiGEMox pipeline.
 
@@ -51,13 +52,17 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
         biomass reaction to at least 99% of its max and run FVA on IEX reactions of metabolites with
         a positive net secretion. The alternatives are:
         * `'fecal_max'`: Constrain the fecal exchange reaction for the reaction of interest to be at least
-        the flux predicted in the raw fecal secretions. Then run FVA on IEX reactions of interest.
+        `fraction` % of the flux predicted in the raw fecal secretions. Then run FVA on IEX reactions of interest.
         * 'net_exchange': Constrain the net exchange (v_diet + v_fecal) for each metabolite using
         FVA-derived signed bounds (min_diet + max_fecal). If positive, impose a secretion-like
         lower bound; if negative, impose an uptake-like upper bound. Then run FVA on IEX reactions.
         precision: A format specifier such as ':.2f', ':.3g', '.2f', '.3g', etc. Used when calculating
         the flux spans to round the min and max fluxes to a certain number of decimal points or sig figs
         (when predicting microbe contributions).
+        fraction: Only used if `method == 'fecal_max'`. The fraction of the flux predicted in raw fecal
+        secretions to use when maximizing and minimizing IEX reactions. This parmeter is tunable for
+        in case infeasibilities are encountered when running the `fecal_max` method. Set to a lower fraction
+        to avoid infeasibilities. Default is 0.98.
     """
     log_with_timestamp(f"--- MiGEMox Pipeline Started at {datetime.now(tz=timezone.utc)} ---")
     log_with_timestamp(f"Current memory usage: {print_memory_usage()}")
@@ -125,6 +130,7 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
             method=method,
             raw_fva_df=raw_fva_df,
             precision=precision,
+            fraction=fraction,
         )
         if use_net_production_dict: kwargs['net_production_dict'] = pos_net_prod
         min_fluxes_df, max_fluxes_df, flux_spans_df = predict_microbe_contributions(**kwargs)
