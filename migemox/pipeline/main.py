@@ -27,7 +27,7 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
                          use_net_production_dict: bool = False,
                          method: str="biomass",
                          precision: str | None=None,
-                         fraction: float = 0.98):
+                         fraction: float = 0.99):
     """
     Main function to run the MiGEMox pipeline.
 
@@ -62,7 +62,7 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
         fraction: Only used if `method == 'fecal_max'`. The fraction of the flux predicted in raw fecal
         secretions to use when maximizing and minimizing IEX reactions. This parmeter is tunable for
         in case infeasibilities are encountered when running the `fecal_max` method. Set to a lower fraction
-        to avoid infeasibilities. Default is 0.98.
+        to avoid infeasibilities. Default is 0.99.
     """
     log_with_timestamp(f"--- MiGEMox Pipeline Started at {datetime.now(tz=timezone.utc)} ---")
     log_with_timestamp(f"Current memory usage: {print_memory_usage()}")
